@@ -110,3 +110,9 @@ def test_start_menu_shortcuts():
 
 def test_uninstaller_restores_and_removes_cert():
     assert entries("UninstallRun", r"{app}\podbridge.exe", "restore --remove-cert")
+
+
+def test_firmware_step_fetches_single_set_with_optional_config():
+    text = WORKFLOW.read_text(encoding="utf-8")
+    assert "--single rtl8852bu" in text
+    assert '"rtl8852bu_fw.bin", "rtl8852bu_config.bin"' not in text

@@ -70,9 +70,8 @@ async def firmware_files(ctx: Context) -> str:
     from podbridge import app
 
     folder = paths.firmware_dir()
-    missing = [name for name in (app.FIRMWARE_FILE, app.FIRMWARE_CONFIG) if not (folder / name).is_file()]
-    if missing:
-        raise StageFailed(f"missing {', '.join(missing)} in {folder}; run podbridge firmware")
+    if not (folder / app.FIRMWARE_FILE).is_file():
+        raise StageFailed(f"missing {app.FIRMWARE_FILE} in {folder}; run podbridge firmware")
     return str(folder)
 
 

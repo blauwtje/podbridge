@@ -245,7 +245,3 @@ def restore_main(args, machine: Machine | None = None) -> int:
             print(f"podbridge restore: {exc}", file=sys.stderr)
             failed = True
     return 1 if failed else 0
-
-
-def restore(args) -> int:
-    return restore_main(args)

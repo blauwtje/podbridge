@@ -9,7 +9,7 @@ COMMANDS = {
     "pair": ("podbridge.app", "pair"),
     "firmware": ("podbridge.app", "firmware"),
     "doctor": ("podbridge.doctor", "main"),
-    "restore": ("podbridge.winusb", "restore"),
+    "restore": ("podbridge.winusb", "restore_main"),
     "selftest": ("podbridge.selftest", "main"),
 }
 

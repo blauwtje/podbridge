@@ -34,12 +34,10 @@ jobs:
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force dist/firmware | Out-Null
-          uv run bumble-rtk-fw-download --source linux-kernel --output-dir dist/firmware
+          uv run bumble-rtk-fw-download --source linux-kernel --single rtl8852bu --output-dir dist/firmware
           if ($LASTEXITCODE -ne 0) { throw "bumble-rtk-fw-download failed" }
           Invoke-WebRequest -Uri $env:FIRMWARE_LICENCE_URL -OutFile dist/firmware/LICENCE.rtlwifi_firmware.txt
-          foreach ($name in "rtl8852bu_fw.bin", "rtl8852bu_config.bin") {
-            if (-not (Test-Path "dist/firmware/$name")) { throw "missing firmware file $name" }
-          }
+          if (-not (Test-Path "dist/firmware/rtl8852bu_fw.bin")) { throw "missing firmware file rtl8852bu_fw.bin" }
 
       - name: Fetch VB-CABLE
         shell: pwsh

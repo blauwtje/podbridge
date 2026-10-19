@@ -113,3 +113,9 @@ def test_loopback_stage_needs_nonzero_samples_and_restores_mute(loopback, expect
     assert run([doctor.loopback_while_muted], ctx) is expected
     assert backend.muted is False and backend.closed
     assert backend.played and backend.played[0][1] == tone()
+
+
+def test_firmware_stage_config_file_is_optional(monkeypatch, tmp_path):
+    monkeypatch.setattr(paths, "firmware_dir", lambda: tmp_path)
+    (tmp_path / "rtl8852bu_fw.bin").write_bytes(b"x")
+    assert run([doctor.firmware_files]) is True

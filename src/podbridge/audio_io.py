@@ -3,6 +3,8 @@ import atexit
 from contextlib import contextmanager
 from typing import Iterator, Protocol
 
+from podbridge import winusb
+
 CABLE_PLAYBACK = "CABLE Input"
 
 
@@ -26,7 +28,7 @@ class AudioBackend(Protocol):
 def muted_default_output(backend: AudioBackend, output_source: str | None = None) -> Iterator[None]:
     """Mute the default render endpoint (Decision 15); restore the prior state on exit.
 
-    Does nothing when `output_source` is given. Restores in finally and atexit.
+    Does nothing when `output_source` is given. Restores in finally, atexit and on console close.
     """
     if output_source:
         yield
@@ -41,10 +43,12 @@ def muted_default_output(backend: AudioBackend, output_source: str | None = None
             backend.set_mute(prior)
 
     atexit.register(restore)
+    handler = winusb.install_close_handler(restore)
     try:
         backend.set_mute(True)
         yield
     finally:
+        winusb.remove_close_handler(handler)
         restore()
         atexit.unregister(restore)
 

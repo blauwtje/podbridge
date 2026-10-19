@@ -35,3 +35,17 @@ def test_output_source_skips_mute():
     b = FakeBackend(muted=False)
     with muted_default_output(b, "Speakers"):
         assert b.muted is False
+
+
+def test_mute_restores_when_console_closes(monkeypatch):
+    from podbridge import winusb
+
+    handlers = []
+    monkeypatch.setattr(winusb, "install_close_handler", lambda restore: handlers.append(restore) or object())
+    monkeypatch.setattr(winusb, "remove_close_handler", lambda handler: None)
+    b = FakeBackend(muted=False)
+    with muted_default_output(b):
+        assert b.muted is True
+        assert handlers, "no console-close handler registered"
+        handlers[0]()
+        assert b.muted is False

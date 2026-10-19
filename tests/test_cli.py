@@ -36,3 +36,9 @@ def test_firmware_dir_prefers_downloaded(tmp_path, monkeypatch):
     (tmp_path / "podbridge" / "firmware").mkdir(parents=True)
     (tmp_path / "podbridge" / "firmware" / "rtl8852bu_fw.bin").write_bytes(b"x")
     assert paths.firmware_dir() == tmp_path / "podbridge" / "firmware"
+
+
+def test_restore_command_names_restore_main():
+    from podbridge import __main__ as cli
+
+    assert cli.COMMANDS["restore"] == ("podbridge.winusb", "restore_main")
