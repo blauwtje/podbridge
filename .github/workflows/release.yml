@@ -58,8 +58,11 @@ jobs:
           msiexec /a wdk-redist.msi /qn TARGETDIR=%CD%\wdk || exit /b 1
           7z x libusb0-redist.zip || exit /b 1
           7z x libusbk-redist.7z || exit /b 1
-          move libusb-win32* libusb0 || exit /b 1
-          move libusbK* libusbk || exit /b 1
+          rem Name the extracted folders exactly: "libusbK*" also matches
+          rem libusbk-redist.7z, and cmd's move then renames that file instead.
+          move libusb-win32-bin-1.4.0.0 libusb0 || exit /b 1
+          move libusbK-3.1.0.0-bin libusbk || exit /b 1
+          if not exist libusbk\bin\sys\x86\libusbK.sys exit /b 1
 
       - name: Build wdi-simple.exe
         shell: cmd
