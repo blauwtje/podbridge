@@ -68,7 +68,6 @@ class FakeStream:
 
 
 class FakePyAudio:
-    paWASAPI = 13
     default_name = "Speakers"
 
     def __init__(self):
@@ -84,6 +83,7 @@ class FakePyAudio:
         ]
 
     def get_host_api_info_by_type(self, kind):
+        assert kind == 13
         return {"defaultOutputDevice": 0 if self.default_name == "Speakers" else 1}
 
     def get_device_info_by_index(self, i):
@@ -185,6 +185,7 @@ def windows(monkeypatch):
     monkeypatch.setitem(sys.modules, "pycaw.constants", constants)
     mod = types.ModuleType("pyaudiowpatch")
     mod.PyAudio = lambda: pa
+    mod.paWASAPI = 13  # a module constant in pyaudiowpatch, not a PyAudio attribute
     monkeypatch.setitem(sys.modules, "pyaudiowpatch", mod)
     monkeypatch.setitem(sys.modules, "comtypes", comtypes)
     monkeypatch.setitem(sys.modules, "pycaw", types.ModuleType("pycaw"))

@@ -186,6 +186,7 @@ class PyAudioWPatchBackend:
         import pyaudiowpatch as pyaudio
 
         self._pa = pyaudio.PyAudio()
+        self._wasapi = pyaudio.paWASAPI
         self._in = None
         self._out: dict[str, object] = {}
         self._carry: list = [None, None]
@@ -210,7 +211,7 @@ class PyAudioWPatchBackend:
             name = output_source
         else:
             speakers = self._pa.get_device_info_by_index(
-                self._pa.get_host_api_info_by_type(self._pa.paWASAPI)["defaultOutputDevice"]
+                self._pa.get_host_api_info_by_type(self._wasapi)["defaultOutputDevice"]
             )
             if speakers.get("isLoopbackDevice"):
                 return speakers
