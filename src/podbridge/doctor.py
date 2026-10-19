@@ -186,11 +186,6 @@ async def cable_devices(ctx: Context) -> str:
     return f"{CABLE_PLAYBACK}, {CABLE_CAPTURE}"
 
 
-def default_output_name(backend) -> str:
-    pa = getattr(backend, "_pa", None)
-    return pa.get_default_output_device_info()["name"] if pa else "Default"
-
-
 async def loopback_while_muted(ctx: Context) -> None:
     """loopback audio while muted"""
     from podbridge.selftest import tone
@@ -199,7 +194,7 @@ async def loopback_while_muted(ctx: Context) -> None:
     ctx.stack.callback(backend.close)
     heard = False
     with muted_default_output(backend, getattr(ctx.args, "output_source", None)):
-        player = asyncio.create_task(asyncio.to_thread(backend.write_playback, tone(), default_output_name(backend)))
+        player = asyncio.create_task(asyncio.to_thread(backend.write_playback, tone(), backend.render_name()))
         for _ in range(LOOPBACK_CHUNKS):
             heard = heard or any(await asyncio.to_thread(backend.read_loopback, 960))
         await player
@@ -249,5 +244,7 @@ def main(args=None) -> int:
     from podbridge import winusb
     from podbridge.audio_io import PyAudioWPatchBackend
 
-    ctx = Context(args=args, machine=winusb.Machine(), backend_factory=PyAudioWPatchBackend)
+    source = getattr(args, "output_source", None)
+    factory = lambda: PyAudioWPatchBackend(output_source=source)
+    ctx = Context(args=args, machine=winusb.Machine(), backend_factory=factory)
     return 0 if asyncio.run(run_stages(STAGES, ctx)) else 1

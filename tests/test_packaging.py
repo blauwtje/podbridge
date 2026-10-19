@@ -37,8 +37,7 @@ def test_workflow_builds_every_bundled_part():
     text = WORKFLOW.read_text(encoding="utf-8")
     for part in (
         "scripts/build_exe.ps1",
-        "bumble-rtk-fw-download",
-        "--source linux-kernel",
+        "linux-firmware.git/plain/rtl_bt/rtl8852bu_fw.bin",
         "LICENCE.rtlwifi_firmware.txt",
         "https://download.vb-audio.com/Download_CABLE/VBCABLE_Driver_Pack45.zip",
         "https://github.com/pbatard/libwdi",
@@ -103,7 +102,7 @@ def test_restart_only_after_vbcable():
 
 
 def test_start_menu_shortcuts():
-    assert entries("Icons", r'"{group}\podbridge"', r"{app}\podbridge.exe", '"run"')
+    assert entries("Icons", r'"{group}\podbridge"', r"{app}\podbridge.exe", '"run --pause"')
     assert entries("Icons", r'"{group}\podbridge doctor"', '"doctor')
     assert entries("Icons", r'"{group}\podbridge restore"', '"restore')
 
@@ -112,7 +111,8 @@ def test_uninstaller_restores_and_removes_cert():
     assert entries("UninstallRun", r"{app}\podbridge.exe", "restore --remove-cert")
 
 
-def test_firmware_step_fetches_single_set_with_optional_config():
+def test_firmware_step_fetches_only_the_fw_file():
+    # linux-firmware has no rtl8852bu_config.bin, and bumble's --single needs it.
     text = WORKFLOW.read_text(encoding="utf-8")
-    assert "--single rtl8852bu" in text
-    assert '"rtl8852bu_fw.bin", "rtl8852bu_config.bin"' not in text
+    assert "bumble-rtk-fw-download" not in text
+    assert "rtl8852bu_config.bin" not in text

@@ -43,7 +43,7 @@ async def wait_until(condition) -> bool:
 
 async def check_output() -> bool:
     source = EncodedPacketSource(A2dpEncoder("aac"))
-    task = asyncio.create_task(output_pipeline(FakeBackend(loopback=tone()), source))
+    task = asyncio.create_task(output_pipeline(FakeBackend(loopback=tone()), lambda: source))
     try:
         return await wait_until(lambda: not source._queue.empty())
     finally:

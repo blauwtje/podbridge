@@ -14,7 +14,7 @@ def test_command_bytes():
     assert len(aap.START) == 19 and aap.START[-3:] == bytes([4, 0x96, 0])
     assert len(aap.STOP) == 12
     assert aap.CONVERSATIONAL_AWARENESS_OFF == bytes.fromhex("0400040009002802000000")
-    assert aap.CONVERSATIONAL_AWARENESS_ON[6] == 1
+    assert aap.CONVERSATIONAL_AWARENESS_ON == bytes.fromhex("0400040009002801000000")
     assert aap.HANDSHAKE[:6] == bytes.fromhex("000004000100")
     assert aap.FEATURES[4:6] == b"\x4d\x00" and aap.NOTIFICATIONS[4:6] == b"\x0f\x00"
 

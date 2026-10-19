@@ -26,7 +26,7 @@ def test_selftest_passes_both_pipelines(capsys):
 def test_output_pipeline_feeds_encoded_frames():
     async def go():
         source = EncodedPacketSource(A2dpEncoder("aac"))
-        task = asyncio.create_task(app.output_pipeline(FakeBackend(loopback=selftest.tone()), source))
+        task = asyncio.create_task(app.output_pipeline(FakeBackend(loopback=selftest.tone()), lambda: source))
         assert await selftest.wait_until(lambda: not source._queue.empty())
         task.cancel()
 
@@ -94,6 +94,46 @@ def test_firmware_config_is_optional_but_firmware_is_not(tmp_path, monkeypatch):
     assert app.firmware(None) == 1
 
 
+def test_output_pipeline_follows_source_swap():
+    async def go():
+        host = types.SimpleNamespace(source=EncodedPacketSource(A2dpEncoder("aac")))
+        old = host.source
+        task = asyncio.create_task(app.output_pipeline(FakeBackend(loopback=selftest.tone()), lambda: host.source))
+        await asyncio.sleep(0)
+        host.source = new = EncodedPacketSource(A2dpEncoder("sbc"))
+        assert await selftest.wait_until(lambda: not new._queue.empty())
+        task.cancel()
+
+    asyncio.run(go())
+
+
+def test_run_passes_output_source_to_backend(monkeypatch):
+    from contextlib import contextmanager
+
+    from podbridge import audio_io, winusb
+
+    seen = []
+
+    class Spy(FakeBackend):
+        def __init__(self, output_source=None):
+            super().__init__()
+            seen.append(output_source)
+
+    @contextmanager
+    def fake_bound(vid, pid, machine=None):
+        yield machine
+
+    async def session(host, backend, address):
+        pass
+
+    monkeypatch.setattr(winusb, "bound", fake_bound)
+    monkeypatch.setattr(audio_io, "PyAudioWPatchBackend", Spy)
+    monkeypatch.setattr(app, "run_session", session)
+    args = types.SimpleNamespace(transport="usb:0bda:887b", output_source="Headset", address="AA")
+    app.run(args, machine=object())
+    assert seen == ["Headset"]
+
+
 def test_start_stream_retries_with_sbc():
     class FakeHost:
         codec = "aac"
@@ -129,9 +169,21 @@ def test_run_restores_driver_around_session(monkeypatch):
         raise RuntimeError("boom")
 
     monkeypatch.setattr(winusb, "bound", fake_bound)
-    monkeypatch.setattr(audio_io, "PyAudioWPatchBackend", FakeBackend)
+    monkeypatch.setattr(audio_io, "PyAudioWPatchBackend", lambda output_source=None: FakeBackend())
     monkeypatch.setattr(app, "run_session", failing_session)
     args = types.SimpleNamespace(transport="usb:0bda:887b", output_source="x", address="AA:BB:CC:DD:EE:FF")
     with pytest.raises(RuntimeError):
         app.run(args, machine=object())
     assert events == [("bind", 0x0BDA, 0x887B), "session", "restore"]
+
+
+def test_run_reports_a_backend_that_cannot_open(monkeypatch, capsys):
+    from podbridge import audio_io
+
+    def broken(output_source=None):
+        raise RuntimeError("no loopback device for 'x'")
+
+    monkeypatch.setattr(audio_io, "PyAudioWPatchBackend", broken)
+    args = types.SimpleNamespace(transport="usb:0bda:887b", output_source="x", address="AA")
+    assert app.run(args, machine=object()) == 1
+    assert "no loopback device" in capsys.readouterr().err

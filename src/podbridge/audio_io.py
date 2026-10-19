@@ -1,11 +1,26 @@
 """Audio capture, playback and endpoint mute behind one backend protocol."""
 import atexit
+import threading
+from array import array
 from contextlib import contextmanager
 from typing import Iterator, Protocol
 
 from podbridge import winusb
 
 CABLE_PLAYBACK = "CABLE Input"
+RATE = 48000
+CENTER_GAIN = 0.707
+FL, FR, FC, NONE = (1, 0), (0, 1), (CENTER_GAIN, CENTER_GAIN), (0, 0)
+BL, BR = (CENTER_GAIN, 0), (0, CENTER_GAIN)
+# Channel order Windows gives an endpoint with this many channels (left gain, right gain each).
+LAYOUTS = {
+    3: (FL, FR, FC),
+    4: (FL, FR, BL, BR),
+    5: (FL, FR, FC, BL, BR),
+    6: (FL, FR, FC, NONE, BL, BR),
+    7: (FL, FR, FC, NONE, FC, BL, BR),
+    8: (FL, FR, FC, NONE, BL, BR, BL, BR),
+}
 
 
 class AudioBackend(Protocol):
@@ -21,6 +36,9 @@ class AudioBackend(Protocol):
     def set_mute(self, muted: bool) -> None:
         """Set the mute state of the default render endpoint."""
 
+    def render_name(self) -> str:
+        """Name of the render device whose loopback is captured."""
+
     def close(self) -> None: ...
 
 
@@ -35,12 +53,14 @@ def muted_default_output(backend: AudioBackend, output_source: str | None = None
         return
     prior = backend.get_mute()
     restored = False
+    lock = threading.Lock()
 
     def restore() -> None:
         nonlocal restored
-        if not restored:
-            restored = True
-            backend.set_mute(prior)
+        with lock:
+            if not restored:
+                backend.set_mute(prior)
+                restored = True
 
     atexit.register(restore)
     handler = winusb.install_close_handler(restore)
@@ -76,42 +96,146 @@ class FakeBackend:
     def set_mute(self, muted: bool) -> None:
         self.muted = muted
 
+    def render_name(self) -> str:
+        return "Default"
+
     def close(self) -> None:
         self.closed = True
 
 
-class PyAudioWPatchBackend:
-    """Windows backend: WASAPI loopback and VB-CABLE through PyAudioWPatch, mute through pycaw."""
+def _clip(value: float) -> int:
+    return max(-32768, min(32767, round(value)))
 
-    def __init__(self) -> None:
+
+def layout(channels: int) -> tuple[tuple[float, float], ...]:
+    """Per-channel (left, right) gains, scaled so a full-scale signal on every channel cannot clip."""
+    gains = LAYOUTS.get(channels) or ((1, 0), (0, 1)) + (NONE,) * (channels - 2)
+    norm = max(1.0, *(sum(g[side] for g in gains) for side in (0, 1)))
+    return tuple((left / norm, right / norm) for left, right in gains)
+
+
+def downmix(samples: array, channels: int) -> tuple[list[float], list[float]]:
+    """Left and right lists from interleaved samples: mono is duplicated, stereo kept, the rest folded."""
+    if channels == 1:
+        return list(samples), list(samples)
+    sides = ([0.0] * (len(samples) // channels) for _ in (0, 1))
+    out = []
+    for side, acc in enumerate(sides):
+        for index, gain in enumerate(layout(channels)):
+            if gain[side]:
+                acc = [a + gain[side] * b for a, b in zip(acc, samples[index::channels])]
+        out.append(acc)
+    return out[0], out[1]
+
+
+def resample(values: list[float], frames: int, prev: float | None = None) -> list[float]:
+    """Linear interpolation of a non-empty chunk onto exactly `frames` samples.
+
+    `prev` is the last sample of the previous chunk (None for the first), so the phase carries
+    across chunks: output i sits at input position (i + 1) * len / frames - 1.
+    """
+    step = len(values) / frames
+    line = [values[0] if prev is None else prev, *values]
+    out = []
+    for i in range(frames):
+        pos = (i + 1) * step
+        low = min(int(pos), len(values))
+        high = min(low + 1, len(values))
+        out.append(line[low] + (line[high] - line[low]) * (pos - low))
+    return out
+
+
+def to_48k_stereo(raw: bytes, channels: int, rate: int, frames: int, carry: list | None = None) -> bytes:
+    """Interleaved 16-bit PCM at any rate and channel count to `frames` 48 kHz 16-bit stereo frames.
+
+    `carry` holds the last left and right sample between calls; an empty read gives silence.
+    """
+    samples = array("h")
+    samples.frombytes(raw[: len(raw) // (2 * channels) * 2 * channels])
+    if not samples:
+        return bytes(frames * 4)
+    carry = carry if carry is not None else [None, None]
+    sides = downmix(samples, channels)
+    stereo = array("h", bytes(frames * 4))
+    for side, values in enumerate(sides):
+        stereo[side::2] = array("h", (_clip(v) for v in resample(values, frames, carry[side])))
+        carry[side] = values[-1]
+    return stereo.tobytes()
+
+
+@contextmanager
+def com_initialised() -> Iterator[None]:
+    """COM objects are per thread; the console-close handler runs on a thread that never initialised it."""
+    import comtypes
+
+    comtypes.CoInitialize()
+    try:
+        yield
+    finally:
+        comtypes.CoUninitialize()
+
+
+class PyAudioWPatchBackend:
+    """Windows backend: WASAPI loopback and VB-CABLE through PyAudioWPatch, mute through pycaw.
+
+    The render endpoint is pinned in `__init__` (Decision 7): `output_source` (a device name part)
+    when given, else the default render endpoint. Loopback and mute both use it for the whole run.
+    """
+
+    def __init__(self, output_source: str | None = None) -> None:
         import pyaudiowpatch as pyaudio
 
         self._pa = pyaudio.PyAudio()
         self._in = None
         self._out: dict[str, object] = {}
+        self._carry: list = [None, None]
+        try:
+            self._loopback = self._loopback_device(output_source)
+            self._endpoint_id = None if output_source else self._default_endpoint_id()
+        except BaseException:
+            self._pa.terminate()
+            raise
 
-    def _loopback_device(self) -> dict:
-        speakers = self._pa.get_device_info_by_index(
-            self._pa.get_host_api_info_by_type(self._pa.paWASAPI)["defaultOutputDevice"]
-        )
-        if speakers.get("isLoopbackDevice"):
-            return speakers
+    @staticmethod
+    def _default_endpoint_id() -> str:
+        from pycaw.constants import EDataFlow, ERole
+        from pycaw.pycaw import AudioUtilities
+
+        with com_initialised():
+            enumerator = AudioUtilities.GetDeviceEnumerator()
+            return enumerator.GetDefaultAudioEndpoint(EDataFlow.eRender.value, ERole.eMultimedia.value).GetId()
+
+    def _loopback_device(self, output_source: str | None) -> dict:
+        if output_source:
+            name = output_source
+        else:
+            speakers = self._pa.get_device_info_by_index(
+                self._pa.get_host_api_info_by_type(self._pa.paWASAPI)["defaultOutputDevice"]
+            )
+            if speakers.get("isLoopbackDevice"):
+                return speakers
+            name = speakers["name"]
         for dev in self._pa.get_loopback_device_info_generator():
-            if speakers["name"] in dev["name"]:
+            if name in dev["name"]:
                 return dev
-        raise RuntimeError("no loopback device for the default output")
+        raise RuntimeError(f"no loopback device for {name!r}")
 
     def read_loopback(self, frames: int) -> bytes:
+        dev = self._loopback
+        rate, channels = int(dev["defaultSampleRate"]), dev["maxInputChannels"]
         if self._in is None:
-            dev = self._loopback_device()
             self._in = self._pa.open(
                 format=self._pa.get_format_from_width(2),
-                channels=dev["maxInputChannels"],
-                rate=int(dev["defaultSampleRate"]),
+                channels=channels,
+                rate=rate,
                 input=True,
                 input_device_index=dev["index"],
             )
-        return self._in.read(frames)
+        raw = self._in.read(round(frames * rate / RATE))
+        return to_48k_stereo(raw, channels, rate, frames, self._carry)
+
+    def render_name(self) -> str:
+        return self._loopback["name"].removesuffix(" [Loopback]")
 
     def write_playback(self, pcm: bytes, device: str = CABLE_PLAYBACK) -> None:
         stream = self._out.get(device)
@@ -139,16 +263,16 @@ class PyAudioWPatchBackend:
         from comtypes import CLSCTX_ALL
         from pycaw.pycaw import AudioUtilities, IAudioEndpointVolume
 
-        speakers = AudioUtilities.GetSpeakers()
-        return speakers.Activate(IAudioEndpointVolume._iid_, CLSCTX_ALL, None).QueryInterface(
-            IAudioEndpointVolume
-        )
+        device = AudioUtilities.GetDeviceEnumerator().GetDevice(self._endpoint_id)
+        return device.Activate(IAudioEndpointVolume._iid_, CLSCTX_ALL, None).QueryInterface(IAudioEndpointVolume)
 
     def get_mute(self) -> bool:
-        return bool(self._volume().GetMute())
+        with com_initialised():
+            return bool(self._volume().GetMute())
 
     def set_mute(self, muted: bool) -> None:
-        self._volume().SetMute(int(muted), None)
+        with com_initialised():
+            self._volume().SetMute(int(muted), None)
 
     def close(self) -> None:
         for stream in [self._in, *self._out.values()]:

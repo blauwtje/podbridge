@@ -32,7 +32,7 @@ Source: "..\dist\vbcable\VBCABLE_Driver_Pack45.zip"; DestDir: "{app}\vbcable"; F
 Source: "..\dist\vbcable\pack\*"; DestDir: "{app}\vbcable\pack"; Flags: ignoreversion recursesubdirs createallsubdirs
 
 [Icons]
-Name: "{group}\podbridge"; Filename: "{app}\podbridge.exe"; Parameters: "run"
+Name: "{group}\podbridge"; Filename: "{app}\podbridge.exe"; Parameters: "run --pause"
 Name: "{group}\podbridge doctor"; Filename: "{app}\podbridge.exe"; Parameters: "doctor --pause"
 Name: "{group}\podbridge restore"; Filename: "{app}\podbridge.exe"; Parameters: "restore --pause"
 

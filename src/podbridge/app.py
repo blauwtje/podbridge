@@ -4,6 +4,7 @@ import json
 import sys
 import urllib.request
 from array import array
+from typing import Callable
 
 from podbridge import paths
 from podbridge.a2dp_encoder import A2dpEncoder
@@ -31,10 +32,14 @@ def mono_to_stereo(samples: array) -> bytes:
     return stereo.tobytes()
 
 
-async def output_pipeline(backend: AudioBackend, source: EncodedPacketSource) -> None:
-    """Loopback capture to the encoder to the A2DP packet queue, until cancelled."""
+async def output_pipeline(backend: AudioBackend, current_source: Callable[[], EncodedPacketSource]) -> None:
+    """Loopback capture to the encoder to the A2DP packet queue, until cancelled.
+
+    `current_source` is asked per frame: the SBC fallback swaps `host.source` mid-session.
+    """
     while True:
-        source.feed(await asyncio.to_thread(backend.read_loopback, LOOPBACK_FRAMES))
+        pcm = await asyncio.to_thread(backend.read_loopback, LOOPBACK_FRAMES)
+        current_source().feed(pcm)
 
 
 async def mic_pipeline(queue: asyncio.Queue, decoder: MicDecoder, backend: AudioBackend) -> None:
@@ -129,7 +134,7 @@ async def run_session(host: Host, backend: AudioBackend, address: str | None) ->
     queue: asyncio.Queue = asyncio.Queue()
     print(DISCORD_HINT)
     pipelines = [
-        asyncio.create_task(output_pipeline(backend, host.source)),
+        asyncio.create_task(output_pipeline(backend, lambda: host.source)),
         asyncio.create_task(mic_pipeline(queue, MicDecoder(), backend)),
     ]
     try:
@@ -146,7 +151,11 @@ def run(args, machine=None) -> int:
 
     machine = machine or winusb.Machine()
     vid, pid = find_usb_ids(args, machine)
-    backend = PyAudioWPatchBackend()
+    try:
+        backend = PyAudioWPatchBackend(output_source=args.output_source)
+    except Exception as exc:
+        print(f"podbridge: cannot open the audio devices ({exc})", file=sys.stderr)
+        return 1
     try:
         with winusb.bound(vid, pid, machine), muted_default_output(backend, args.output_source):
             host = Host(f"usb:{vid:04X}:{pid:04X}")

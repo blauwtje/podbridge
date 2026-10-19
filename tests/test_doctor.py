@@ -119,3 +119,13 @@ def test_firmware_stage_config_file_is_optional(monkeypatch, tmp_path):
     monkeypatch.setattr(paths, "firmware_dir", lambda: tmp_path)
     (tmp_path / "rtl8852bu_fw.bin").write_bytes(b"x")
     assert run([doctor.firmware_files]) is True
+
+
+def test_loopback_tone_goes_to_the_captured_device():
+    class Headset(FakeBackend):
+        def render_name(self):
+            return "Headset"
+
+    backend = Headset(loopback=tone())
+    assert run([doctor.loopback_while_muted], doctor.Context(backend_factory=lambda: backend)) is True
+    assert backend.played[0][0] == "Headset"
