@@ -1,0 +1,96 @@
+name: release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  setup:
+    runs-on: windows-latest
+    env:
+      LIBWDI_VERSION: v1.5.1
+      VBCABLE_URL: https://download.vb-audio.com/Download_CABLE/VBCABLE_Driver_Pack45.zip
+      FIRMWARE_LICENCE_URL: https://git.kernel.org/pub/scm/linux/kernel/git/firmware/linux-firmware.git/plain/LICENCE.rtlwifi_firmware.txt
+      WDK_URL: https://go.microsoft.com/fwlink/p/?LinkID=253170
+      LIBUSB0_URL: https://github.com/mcuee/libusb-win32/releases/download/release_1.4.0.0/libusb-win32-bin-1.4.0.0.zip
+      LIBUSBK_URL: https://github.com/mcuee/libusbk/releases/download/V3.1.0.0/libusbK-3.1.0.0-bin.7z
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v6
+
+      - uses: microsoft/setup-msbuild@v2
+
+      - name: Build podbridge.exe (PyInstaller one-folder)
+        shell: pwsh
+        run: ./scripts/build_exe.ps1 -DistPath dist
+
+      - name: Fetch Realtek firmware
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force dist/firmware | Out-Null
+          uv run bumble-rtk-fw-download --source linux-kernel --output-dir dist/firmware
+          if ($LASTEXITCODE -ne 0) { throw "bumble-rtk-fw-download failed" }
+          Invoke-WebRequest -Uri $env:FIRMWARE_LICENCE_URL -OutFile dist/firmware/LICENCE.rtlwifi_firmware.txt
+          foreach ($name in "rtl8852bu_fw.bin", "rtl8852bu_config.bin") {
+            if (-not (Test-Path "dist/firmware/$name")) { throw "missing firmware file $name" }
+          }
+
+      - name: Fetch VB-CABLE
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force dist/vbcable | Out-Null
+          Invoke-WebRequest -Uri $env:VBCABLE_URL -OutFile dist/vbcable/VBCABLE_Driver_Pack45.zip
+          Expand-Archive dist/vbcable/VBCABLE_Driver_Pack45.zip -DestinationPath dist/vbcable/pack
+          if (-not (Test-Path dist/vbcable/pack/VBCABLE_Setup_x64.exe)) { throw "VBCABLE_Setup_x64.exe not in the pack" }
+
+      - name: Fetch libwdi source and its driver redistributables
+        shell: cmd
+        run: |
+          git clone --depth 1 --recurse-submodules --branch %LIBWDI_VERSION% https://github.com/pbatard/libwdi.git libwdi-src || exit /b 1
+          cd libwdi-src || exit /b 1
+          curl -fL "%WDK_URL%" -o wdk-redist.msi || exit /b 1
+          curl -fL %LIBUSB0_URL% -o libusb0-redist.zip || exit /b 1
+          curl -fL %LIBUSBK_URL% -o libusbk-redist.7z || exit /b 1
+          msiexec /a wdk-redist.msi /qn TARGETDIR=%CD%\wdk || exit /b 1
+          7z x libusb0-redist.zip || exit /b 1
+          7z x libusbk-redist.7z || exit /b 1
+          move libusb-win32* libusb0 || exit /b 1
+          move libusbK* libusbk || exit /b 1
+
+      - name: Build wdi-simple.exe
+        shell: cmd
+        working-directory: libwdi-src
+        run: msbuild libwdi.sln /m /p:Configuration=Release,Platform=x64,BuildMacros="WDK_DIR=\"../wdk/Windows Kits/8.0\";LIBUSB0_DIR=\"../libusb0\";LIBUSBK_DIR=\"../libusbk/bin\""
+
+      - name: Stage wdi-simple.exe
+        shell: pwsh
+        run: |
+          $exe = Get-ChildItem libwdi-src/x64 -Recurse -Filter wdi-simple.exe | Select-Object -First 1
+          if (-not $exe) { throw "wdi-simple.exe was not built" }
+          New-Item -ItemType Directory -Force dist/tools | Out-Null
+          Copy-Item $exe.FullName dist/tools/wdi-simple.exe
+
+      - name: Compile podbridge-setup.exe
+        shell: pwsh
+        run: |
+          $iscc = Join-Path ${env:ProgramFiles(x86)} "Inno Setup 6/ISCC.exe"
+          if (-not (Test-Path $iscc)) {
+            choco install innosetup --no-progress -y
+            if ($LASTEXITCODE -ne 0) { throw "Inno Setup install failed" }
+          }
+          $version = (& dist/podbridge/podbridge.exe --version).Split(" ")[1]
+          & $iscc "/DAppVersion=$version" installer/podbridge.iss
+          if ($LASTEXITCODE -ne 0) { throw "ISCC failed with exit code $LASTEXITCODE" }
+          if (-not (Test-Path dist/podbridge-setup.exe)) { throw "podbridge-setup.exe not produced" }
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || format('build-{0}', github.run_number) }}
+          prerelease: ${{ !startsWith(github.ref, 'refs/tags/') }}
+          files: dist/podbridge-setup.exe
