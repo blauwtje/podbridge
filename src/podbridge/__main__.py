@@ -1,6 +1,7 @@
 import argparse
 import importlib
 import sys
+import traceback
 
 from podbridge import __version__
 
@@ -36,9 +37,13 @@ def main(argv: list[str] | None = None) -> int:
     module, func = COMMANDS[args.command]
     try:
         result = getattr(importlib.import_module(module), func)(args)
-    finally:
-        if args.pause:
-            input("Press Enter to close...")
+    except Exception:
+        if not args.pause:
+            raise
+        traceback.print_exc()  # show the error before the window waits, not after it closes
+        result = 1
+    if args.pause:
+        input("Press Enter to close...")
     return result or 0
 
 

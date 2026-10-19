@@ -42,3 +42,17 @@ def test_restore_command_names_restore_main():
     from podbridge import __main__ as cli
 
     assert cli.COMMANDS["restore"] == ("podbridge.winusb", "restore_main")
+
+
+def test_pause_shows_the_error_before_waiting(monkeypatch, capsys):
+    from podbridge import __main__
+
+    def boom(args):
+        raise RuntimeError("bind failed")
+
+    seen = []
+    monkeypatch.setitem(__main__.COMMANDS, "run", ("podbridge.__main__", "_boom"))
+    monkeypatch.setattr(__main__, "_boom", boom, raising=False)
+    monkeypatch.setattr("builtins.input", lambda prompt: seen.append(capsys.readouterr().err))
+    assert __main__.main(["run", "--pause"]) == 1
+    assert "bind failed" in seen[0]
