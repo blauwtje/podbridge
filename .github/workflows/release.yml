@@ -64,7 +64,13 @@ jobs:
       - name: Build wdi-simple.exe
         shell: cmd
         working-directory: libwdi-src
-        run: msbuild libwdi.sln /m /p:Configuration=Release,Platform=x64,BuildMacros="WDK_DIR=\"../wdk/Windows Kits/8.0\";LIBUSB0_DIR=\"../libusb0\";LIBUSBK_DIR=\"../libusbk/bin\""
+        # libwdi's embedder packs installer_x86.exe (built only by the Win32
+        # config) and installer_arm64.exe, so build Win32 before x64 as
+        # upstream's vs2022.yml does. The VS 2026 image ships v143 for
+        # x86/x64 only, so use its own v145 toolset, which covers ARM64 too.
+        run: |
+          msbuild libwdi.sln /m /p:Configuration=Release,Platform=Win32,PlatformToolset=v145,BuildMacros="WDK_DIR=\"../wdk/Windows Kits/8.0\";LIBUSB0_DIR=\"../libusb0\";LIBUSBK_DIR=\"../libusbk/bin\"" || exit /b 1
+          msbuild libwdi.sln /m /p:Configuration=Release,Platform=x64,PlatformToolset=v145,BuildMacros="WDK_DIR=\"../wdk/Windows Kits/8.0\";LIBUSB0_DIR=\"../libusb0\";LIBUSBK_DIR=\"../libusbk/bin\"" || exit /b 1
 
       - name: Stage wdi-simple.exe
         shell: pwsh
