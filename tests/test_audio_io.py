@@ -58,6 +58,10 @@ class FakeStream:
     def __init__(self, **kw):
         self.kw = kw
         self.requested = []
+        self.available = 10**9
+
+    def get_read_available(self):
+        return self.available
 
     def read(self, n):
         self.requested.append(n)
@@ -393,3 +397,15 @@ def test_render_name_is_the_captured_device(windows):
 
     assert PyAudioWPatchBackend(output_source="Headset").render_name() == "Headset"
     assert PyAudioWPatchBackend().render_name() == "Speakers"
+
+
+def test_idle_endpoint_returns_silence_instead_of_blocking(windows, monkeypatch):
+    from podbridge import audio_io
+    from podbridge.audio_io import PyAudioWPatchBackend
+
+    monkeypatch.setattr(audio_io, "LOOPBACK_WAIT_S", 0.05)
+    backend = PyAudioWPatchBackend()
+    backend.read_loopback(960)
+    backend._in.available = 0
+    backend._in.read = lambda n: pytest.fail("must not block on read")
+    assert backend.read_loopback(960) == bytes(960 * 4)

@@ -1,6 +1,7 @@
 """Audio capture, playback and endpoint mute behind one backend protocol."""
 import atexit
 import threading
+import time
 from array import array
 from contextlib import contextmanager
 from typing import Iterator, Protocol
@@ -10,6 +11,7 @@ from podbridge import winusb
 CABLE_PLAYBACK = "CABLE Input"
 RATE = 48000
 CENTER_GAIN = 0.707
+LOOPBACK_WAIT_S = 0.5
 FL, FR, FC, NONE = (1, 0), (0, 1), (CENTER_GAIN, CENTER_GAIN), (0, 0)
 BL, BR = (CENTER_GAIN, 0), (0, CENTER_GAIN)
 # Channel order Windows gives an endpoint with this many channels (left gain, right gain each).
@@ -232,7 +234,13 @@ class PyAudioWPatchBackend:
                 input=True,
                 input_device_index=dev["index"],
             )
-        raw = self._in.read(round(frames * rate / RATE))
+        need = round(frames * rate / RATE)
+        deadline = time.monotonic() + LOOPBACK_WAIT_S
+        while self._in.get_read_available() < need:
+            if time.monotonic() >= deadline:
+                return bytes(frames * 4)
+            time.sleep(0.01)
+        raw = self._in.read(need)
         return to_48k_stereo(raw, channels, rate, frames, self._carry)
 
     def render_name(self) -> str:
