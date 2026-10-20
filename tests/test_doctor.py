@@ -81,7 +81,10 @@ def test_stage_order_follows_decision_17():
 
 
 def test_firmware_stage_names_missing_file(monkeypatch, tmp_path):
+    from podbridge import app
+
     monkeypatch.setattr(paths, "firmware_dir", lambda: tmp_path)
+    monkeypatch.setattr(app, "fetch", lambda destination: OSError("offline"))
     assert run([doctor.firmware_files]) is False
     (tmp_path / "rtl8852bu_fw.bin").write_bytes(b"x")
     (tmp_path / "rtl8852bu_config.bin").write_bytes(b"x")
@@ -145,3 +148,29 @@ def test_loopback_tone_goes_to_the_captured_device():
     backend = Headset(loopback=tone())
     assert run([doctor.loopback_while_muted], doctor.Context(backend_factory=lambda: backend)) is True
     assert backend.played[0][0] == "Headset"
+
+
+def test_firmware_stage_downloads_a_missing_file(monkeypatch, tmp_path):
+    from podbridge import app
+
+    monkeypatch.setattr(paths, "install_dir", lambda: tmp_path / "install")
+    fetched = []
+
+    def fake_fetch(destination):
+        fetched.append(destination.name)
+        destination.write_bytes(b"x")
+
+    monkeypatch.setattr(app, "fetch", fake_fetch)
+    assert run([doctor.firmware_files]) is True
+    assert fetched[0] == app.FIRMWARE_FILE
+    assert (paths.appdata_dir() / "firmware" / app.FIRMWARE_FILE).is_file()
+
+
+def test_firmware_stage_hint_when_the_download_fails(monkeypatch, tmp_path, caplog):
+    from podbridge import app
+
+    monkeypatch.setattr(paths, "install_dir", lambda: tmp_path / "install")
+    monkeypatch.setattr(app, "fetch", lambda destination: OSError("offline"))
+    ctx = doctor.Context()
+    with pytest.raises(doctor.StageFailed, match="internet.*open podbridge again"):
+        asyncio.run(doctor.firmware_files(ctx))
