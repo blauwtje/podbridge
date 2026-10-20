@@ -106,6 +106,22 @@ def test_cable_stage(monkeypatch):
     assert run([doctor.cable_devices]) is True
 
 
+def test_cable_hint_says_restart_once_then_run_the_setup_again(monkeypatch, capsys):
+    monkeypatch.setattr(doctor, "cable_endpoints", lambda: {"CABLE Input"})
+    assert run([doctor.cable_devices]) is False
+    out = capsys.readouterr().out
+    assert "restart Windows once after setup" in out
+    assert "run the podbridge setup again" in out
+
+
+def test_quiet_run_prints_and_logs_nothing_on_a_pass(capsys, appdata):
+    assert run([make("one")], None) is True
+    capsys.readouterr()
+    assert asyncio.run(doctor.run_stages([make("one")], doctor.Context(), quiet=True)) is True
+    assert capsys.readouterr().out == ""
+    assert len((appdata / "podbridge" / "doctor.log").read_text().splitlines()) == 1
+
+
 @pytest.mark.parametrize("loopback, expected", [(tone(), True), (b"", False)])
 def test_loopback_stage_needs_nonzero_samples_and_restores_mute(loopback, expected):
     backend = FakeBackend(loopback=loopback, muted=False)

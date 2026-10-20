@@ -182,7 +182,10 @@ async def cable_devices(ctx: Context) -> str:
     except (ImportError, OSError) as exc:
         raise StageFailed(f"cannot read the audio endpoints ({exc})") from exc
     if missing:
-        raise StageFailed(f"missing {', '.join(sorted(missing))}; VB-CABLE is not installed or is disabled")
+        raise StageFailed(
+            f"missing {', '.join(sorted(missing))}; restart Windows once after setup; "
+            "if it is still missing, run the podbridge setup again"
+        )
     return f"{CABLE_PLAYBACK}, {CABLE_CAPTURE}"
 
 
@@ -227,8 +230,10 @@ def record(line: str) -> None:
         log.write(f"{datetime.now().isoformat(timespec='seconds')} {line}\n")
 
 
-async def run_stages(stages, ctx: Context) -> bool:
-    """Run each stage in order, record PASS or FAIL, and stop at the first failure."""
+async def run_stages(stages, ctx: Context, quiet: bool = False) -> bool:
+    """Run each stage in order, record PASS or FAIL, and stop at the first failure.
+
+    A quiet run records only the failure."""
     async with ctx.stack:
         for stage in stages:
             try:
@@ -239,7 +244,8 @@ async def run_stages(stages, ctx: Context) -> bool:
             except Exception as exc:
                 record(f"FAIL {stage.__doc__}: {type(exc).__name__}: {exc}")
                 return False
-            record(f"PASS {stage.__doc__}" + (f": {detail}" if detail else ""))
+            if not quiet:
+                record(f"PASS {stage.__doc__}" + (f": {detail}" if detail else ""))
     return True
 
 

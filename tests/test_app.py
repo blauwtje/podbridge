@@ -212,6 +212,26 @@ def test_run_stops_before_binding_when_preflight_fails(monkeypatch, tmp_path, ca
     assert "FAIL setup: fix this" in capsys.readouterr().out
 
 
+def test_run_prints_nothing_when_the_preflight_passes(preflight_usb_only, monkeypatch, capsys):
+    from contextlib import contextmanager
+
+    from podbridge import audio_io, winusb
+
+    @contextmanager
+    def fake_bound(vid, pid, machine=None):
+        yield machine
+
+    async def session(host, backend, address):
+        pass
+
+    monkeypatch.setattr(winusb, "bound", fake_bound)
+    monkeypatch.setattr(audio_io, "PyAudioWPatchBackend", lambda output_source=None: FakeBackend())
+    monkeypatch.setattr(app, "run_session", session)
+    args = types.SimpleNamespace(transport="usb:0bda:887b", output_source="x", address="AA")
+    assert app.run(args, machine=object()) == 0
+    assert capsys.readouterr().out == ""
+
+
 def test_preflight_is_the_four_setup_stages():
     from podbridge import doctor
 

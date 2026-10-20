@@ -156,7 +156,7 @@ def run(args, machine=None) -> int:
 
     machine = machine or winusb.Machine()
     ctx = doctor.Context(args=args, machine=machine)
-    if not asyncio.run(doctor.run_stages(doctor.PREFLIGHT, ctx)):
+    if not asyncio.run(doctor.run_stages(doctor.PREFLIGHT, ctx, quiet=True)):
         return 1
     vid, pid = ctx.vid, ctx.pid
     try:
