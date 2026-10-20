@@ -14,6 +14,7 @@ the default is `run`.
 .\scripts\dev.ps1 doctor
 .\scripts\dev.ps1 -Branch fix/radio run --console
 #>
+[CmdletBinding(PositionalBinding = $false)]
 param(
     [string]$Branch = "",
     [string]$Remote = "",
