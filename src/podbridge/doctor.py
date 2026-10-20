@@ -11,6 +11,7 @@ from podbridge.audio_io import CABLE_PLAYBACK, muted_default_output
 
 CABLE_CAPTURE = "CABLE Output"
 MIC_WINDOW_S = 3.0
+OPEN_WAIT_S = 15.0  # SETTLE_S, OPEN_RETRIES opens and the command gaps, before START goes out
 LOOPBACK_CHUNKS = 50
 MMDEVICES = r"SOFTWARE\Microsoft\Windows\CurrentVersion\MMDevices\Audio"
 DEVICE_STATE_ACTIVE = 1
@@ -135,13 +136,22 @@ async def mic_frames(ctx: Context) -> str:
     """AAP mic frames per second"""
     from podbridge.aap_session import AapSession
 
-    session = asyncio.create_task(AapSession(ctx.connection, ctx.queue).run())
+    aap = AapSession(ctx.connection, ctx.queue)
+    session = asyncio.create_task(aap.run())
     try:
-        await asyncio.wait({session}, timeout=MIC_WINDOW_S)
+        started = asyncio.create_task(aap.started.wait())
+        try:
+            await asyncio.wait({session, started}, timeout=OPEN_WAIT_S, return_when=asyncio.FIRST_COMPLETED)
+        finally:
+            started.cancel()
+        if aap.started.is_set():
+            await asyncio.wait({session}, timeout=MIC_WINDOW_S)
     finally:
         session.cancel()
     if session.done() and not session.cancelled() and session.exception():
         raise StageFailed(f"AAP channel failed: {session.exception()}")
+    if not aap.started.is_set():
+        raise StageFailed("AAP channel did not open; put the AirPods in the case, open it and retry")
     frames = ctx.queue.qsize()
     if not frames:
         raise StageFailed("no mic frames; reseat the AirPods in your ears and retry")

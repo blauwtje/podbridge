@@ -39,6 +39,7 @@ class AapSession:
         self.ca_choice = options.get("ca_choice")
         self.reporter = options.get("reporter")
         self.outgoing: asyncio.Queue = asyncio.Queue()
+        self.started = asyncio.Event()
         self.restarts = 0
         self.frames_seen = 0
         self._silent_reported = False
@@ -116,6 +117,7 @@ class AapSession:
                 await asyncio.sleep(COMMAND_GAP_S)
             channel.write(command)
         self._last_start = self._last_frame = self.clock()
+        self.started.set()
         while not closed.is_set():
             await asyncio.sleep(POLL_S)
             while not self.outgoing.empty():
