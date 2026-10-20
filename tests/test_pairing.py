@@ -18,8 +18,9 @@ class Host:
     def __init__(self, result):
         self.result, self.calls = result, []
 
-    async def pair(self, timeout=60.0):
+    async def pair(self, timeout=60.0, address=None):
         self.calls.append(self.events_seen())
+        self.address = address
         if isinstance(self.result, Exception):
             raise self.result
         return self.result
@@ -50,3 +51,10 @@ def test_timeout_or_bumble_error_gives_next_step(err):
     assert last.kind == "pairing_timeout"
     assert "no AirPods connected in 60 s" in last.message
     assert "podbridge run --address <address>" in last.next_step
+
+
+def test_a_known_address_is_passed_to_the_host():
+    rec, host = Rec(), Host("conn")
+    host.rec = rec
+    asyncio.run(pairing.pair_with_hint(host, rec, address="AA:BB:CC:DD:EE:FF"))
+    assert host.address == "AA:BB:CC:DD:EE:FF"

@@ -67,3 +67,34 @@ def test_connect_bonded_passes_other_errors(tmp_path, monkeypatch):
     with pytest.raises(HCI_Error):
         asyncio.run(bond.connect_bonded(FakeHost(HCI_Error(0x04)), ADDR, Rec()))
     assert ADDR in json.loads(path.read_text())["ns"]
+
+
+LINK_KEY = {"link_key": {"value": "00" * 16, "authenticated": False}}
+
+
+def test_key_saved_finds_the_link_key_in_bumbles_namespace(tmp_path):
+    path = tmp_path / "keys.json"
+    path.write_text(json.dumps({"__DEFAULT__": {ADDR + "/P": LINK_KEY}}))
+    assert bond.key_saved(path, ADDR.lower())
+    assert not bond.key_saved(path, "11:22:33:44:55:66")
+
+
+@pytest.mark.parametrize(
+    "content",
+    [None, {}, {"__DEFAULT__": {ADDR + "/P": {}}}, {"one": {ADDR: LINK_KEY}, "two": {}}],
+    ids=["no file", "empty", "no link key", "namespace Bumble does not read"],
+)
+def test_key_saved_is_false_without_a_usable_link_key(tmp_path, content):
+    path = tmp_path / "keys.json"
+    if content is not None:
+        path.write_text(json.dumps(content))
+    assert not bond.key_saved(path, ADDR)
+
+
+@pytest.mark.parametrize("text", ["{not json", "[]"])
+def test_key_saved_sets_an_unreadable_file_aside_so_pairing_can_store_a_key(tmp_path, text):
+    path = tmp_path / "keys.json"
+    path.write_text(text)
+    assert not bond.key_saved(path, ADDR)
+    assert not path.exists()
+    assert (tmp_path / "keys.json.rejected").read_text() == text
