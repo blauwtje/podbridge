@@ -331,6 +331,10 @@ def run(args, machine=None, reporter=None) -> int:
     machine = machine or winusb.Machine()
     console = reporter is None
     reporter = SafeReporter(ConsoleReporter() if console else reporter)
+    try:
+        winusb.check_single_instance(machine)
+    except winusb.DriverError as exc:
+        return refuse(reporter, console, str(exc))
     pending = crash.restore_pending(machine.state_path) if hasattr(machine, "state_path") else None
     if pending:
         reporter.emit(pending)

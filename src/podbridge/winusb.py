@@ -21,6 +21,10 @@ POLL_SECONDS = 10.0
 POLL_INTERVAL = 0.5
 COMMAND_TIMEOUT = 120
 CTRL_CLOSE_EVENT = 2
+MUTEX_NAME = "Global\\podbridge"
+ERROR_ALREADY_EXISTS = 183
+ERROR_ACCESS_DENIED = 5
+ALREADY_RUNNING = "another podbridge is running; close it first (it owns the Bluetooth radio)"
 INF_RE = re.compile(r"oem\d{1,5}\.inf", re.IGNORECASE)
 INSTANCE_RE = re.compile(r"USB\\VID_([0-9A-F]{4})&PID_([0-9A-F]{4})\\[A-Z0-9&_.]{1,64}", re.IGNORECASE)
 LIBWDI_PROVIDER = "libwdi"
@@ -63,8 +67,40 @@ class DriverError(RuntimeError):
     pass
 
 
+class AlreadyRunning(DriverError):
+    """Another podbridge holds the single-instance lock; the driver is theirs, so nothing to restore."""
+
+
 def run_command(args: list[str]) -> subprocess.CompletedProcess:
     return subprocess.run(args, capture_output=True, text=True, timeout=COMMAND_TIMEOUT, check=False)
+
+
+def hold_single_instance() -> Callable[[], None]:
+    """Take the machine-wide named mutex; return the function that gives it back.
+
+    Every podbridge (installed or `scripts/dev.ps1` from source) uses the same name, because they all
+    bind the same device and share one driver-state file. The OS frees the mutex when the process
+    dies, so a hard kill never leaves the next run locked out. Off Windows there is nothing to hold.
+    """
+    if sys.platform != "win32":
+        return lambda: None
+    import ctypes
+    from ctypes import wintypes
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.CreateMutexW.argtypes = [wintypes.LPVOID, wintypes.BOOL, wintypes.LPCWSTR]
+    kernel32.CreateMutexW.restype = wintypes.HANDLE
+    kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+    kernel32.CloseHandle.restype = wintypes.BOOL
+    handle = kernel32.CreateMutexW(None, False, MUTEX_NAME)
+    error = ctypes.get_last_error()
+    if handle and error != ERROR_ALREADY_EXISTS:
+        return partial(kernel32.CloseHandle, handle)
+    if handle:
+        kernel32.CloseHandle(handle)
+    if handle or error == ERROR_ACCESS_DENIED:  # denied: the mutex exists, owned by a process we cannot open
+        raise AlreadyRunning(ALREADY_RUNNING)
+    raise DriverError(f"cannot create the single-instance lock {MUTEX_NAME}: {ctypes.WinError(error)}")
 
 
 @dataclass
@@ -74,6 +110,7 @@ class Machine:
     wdi_simple: Path = field(default_factory=lambda: install_dir() / "tools" / "wdi-simple.exe")
     wdi_dest: Path = field(default_factory=lambda: install_dir() / "usb_driver")
     sleep: Callable[[float], None] = time.sleep
+    single_instance: Callable[[], Callable[[], None]] = hold_single_instance
 
 
 def describe_exit(code: int, wdi: bool) -> str:
@@ -314,16 +351,34 @@ def remove_close_handler(handler: object) -> None:
         ctypes.windll.kernel32.SetConsoleCtrlHandler(handler, False)
 
 
+def check_single_instance(machine) -> None:
+    """Raise DriverError when another podbridge holds the lock. `bound` takes the lock for real; this
+    lets `run` refuse early, before it reads the other instance's driver-state file as a leftover."""
+    acquire = getattr(machine, "single_instance", None)
+    if acquire is not None:
+        acquire()()
+
+
 @contextmanager
 def bound(vid: int, pid: int, machine: Machine | None = None):
     machine = machine or Machine()
+    release = machine.single_instance()  # before any driver step: a second podbridge must not undo the first's WinUSB
+    try:
+        with _bound(vid, pid, machine):
+            yield machine
+    finally:
+        release()
+
+
+@contextmanager
+def _bound(vid: int, pid: int, machine: Machine):
     restore_driver(machine)
     restore = partial(restore_driver, machine)
     atexit.register(restore)
     handler = install_close_handler(restore)
     try:
         bind(machine, vid, pid)
-        yield machine
+        yield
     finally:
         remove_close_handler(handler)
         atexit.unregister(restore)

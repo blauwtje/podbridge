@@ -743,3 +743,24 @@ def test_run_gives_the_session_recovery_steps_for_its_device(preflight_usb_only,
     args = types.SimpleNamespace(transport="usb:0bda:887b", output_source="x", address="AA")
     assert app.run(args, machine=machine) == 0
     assert seen == [("steps", machine, 0x0BDA, 0x887B)]
+
+
+def test_run_refuses_a_second_instance_without_blaming_an_earlier_run(monkeypatch, tmp_path, capsys):
+    """The first instance's driver-state file is not a leftover: no 'earlier run' warning, no checks."""
+    from podbridge import doctor, winusb
+
+    def taken():
+        raise winusb.DriverError(winusb.ALREADY_RUNNING)
+
+    state = tmp_path / "state" / "driver-state.json"
+    state.parent.mkdir()
+    state.write_text("{}")
+    monkeypatch.setattr(doctor, "run_stages", lambda *a, **k: pytest.fail("ran the checks"))
+    reporter = RecordingReporter()
+    machine = winusb.Machine(state_path=state, single_instance=taken)
+    args = types.SimpleNamespace(transport="usb:0bda:887b", output_source=None, address="AA")
+    assert app.run(args, machine=machine, reporter=reporter) == 1
+    assert reporter.events == ["failed"]
+    assert state.exists()
+    assert app.run(args, machine=machine) == 1
+    assert "another podbridge is running" in capsys.readouterr().err

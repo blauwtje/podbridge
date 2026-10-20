@@ -18,6 +18,7 @@ ASSET = "podbridge-setup.exe"
 API_TIMEOUT_S = 10
 DOWNLOAD_TIMEOUT_S = 60
 TAG = re.compile(r"(build-[0-9]+|v[0-9A-Za-z.-]+)")
+NUMBERED = re.compile(r"build-([0-9]+)")
 DIGEST = re.compile(r"sha256:([0-9a-f]{64})")
 SETUP_ARGS = ["/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/LOG"]
 
@@ -81,6 +82,12 @@ def newest(releases) -> Release | None:
     return max(found, key=lambda c: c[0])[1] if found else None
 
 
+def older(tag: str, build: str) -> bool:
+    """True when both are numbered builds and `tag` is the lower number, so a newer local build is not downgraded."""
+    tag_number, build_number = NUMBERED.fullmatch(tag), NUMBERED.fullmatch(build)
+    return bool(tag_number and build_number and int(tag_number[1]) < int(build_number[1]))
+
+
 def verified(release: Release, data: bytes, final_url: str) -> None:
     """Raise Skip unless the download is the asset GitHub describes."""
     if not release.url.startswith(DOWNLOAD_PREFIX):
@@ -101,9 +108,10 @@ def install(release: Release) -> None:
         raise Skip("download url outside the repo")
     if not DIGEST.fullmatch(release.sha256):
         raise Skip("missing or malformed digest")
-    data, final_url = download(release.url)
+    folder.mkdir(parents=True, exist_ok=True)
     try:
-        folder.mkdir(parents=True, exist_ok=True)
+        setup.write_bytes(b"")  # fails here, before a 60 s download, when the folder is read-only
+        data, final_url = download(release.url)
         setup.write_bytes(data)
         verified(release, data, final_url)
         (folder / "attempted.txt").write_text(release.tag + "\n", encoding="utf-8")
@@ -125,7 +133,7 @@ def apply(args) -> bool:
         return False
     try:
         release = newest(get_json(API_URL))
-        if release is None or release.tag == build:
+        if release is None or release.tag == build or older(release.tag, build):
             return False
         attempted = paths.install_dir() / "update" / "attempted.txt"
         if attempted.is_file() and attempted.read_text(encoding="utf-8").strip() == release.tag:

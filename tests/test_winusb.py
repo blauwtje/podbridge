@@ -1,4 +1,5 @@
 import argparse
+import dataclasses
 import json
 import subprocess
 from pathlib import Path
@@ -586,3 +587,68 @@ def test_restart_device_that_loses_the_winusb_bind_is_an_error(setup):
     fake.driver, fake.restart_driver = LIBWDI_INF, REALTEK_INF
     with pytest.raises(winusb.DriverError, match="WinUSB"):
         winusb.restart_device(machine)
+
+
+class FakeLock:
+    """The named mutex: one holder at a time, shared by every machine given the same instance."""
+
+    def __init__(self):
+        self.held = False
+
+    def __call__(self):
+        if self.held:
+            raise winusb.AlreadyRunning(winusb.ALREADY_RUNNING)
+        self.held = True
+        return self.release
+
+    def release(self):
+        self.held = False
+
+
+def machine_with(machine, lock):
+    return dataclasses.replace(machine, single_instance=lock)
+
+
+def test_second_instance_is_refused_before_it_touches_the_driver(setup):
+    fake, machine, _ = setup
+    machine = machine_with(machine, FakeLock())
+    with winusb.bound(VID, PID, machine):
+        calls_before = len(fake.calls)
+        with pytest.raises(winusb.DriverError, match="another podbridge is running"):
+            with winusb.bound(VID, PID, machine):
+                pytest.fail("the second instance got the device")
+        assert len(fake.calls) == calls_before
+        assert fake.driver == LIBWDI_INF  # the first instance still has WinUSB
+
+
+def test_lock_is_released_after_a_normal_run_and_after_a_failed_one(setup):
+    fake, machine, _ = setup
+    lock = FakeLock()
+    machine = machine_with(machine, lock)
+    with winusb.bound(VID, PID, machine):
+        pass
+    assert not lock.held
+    with pytest.raises(RuntimeError, match="boom"):
+        with winusb.bound(VID, PID, machine):
+            raise RuntimeError("boom")
+    assert not lock.held
+    with winusb.bound(VID, PID, machine):  # a normal single run is never blocked by an earlier one
+        assert lock.held
+
+
+def test_lock_is_released_when_the_first_restore_fails(setup):
+    fake, machine, state_path = setup
+    lock = FakeLock()
+    machine = machine_with(machine, lock)
+    write_state(state_path)
+    fake.driver = LIBWDI_INF
+    fake.delete_exit = 5
+    with pytest.raises(winusb.DriverError):
+        with winusb.bound(VID, PID, machine):
+            pass
+    assert not lock.held
+
+
+def test_default_machine_uses_the_named_mutex_of_the_app(setup):
+    assert winusb.Machine().single_instance is winusb.hold_single_instance
+    assert winusb.MUTEX_NAME == "Global\\podbridge"
