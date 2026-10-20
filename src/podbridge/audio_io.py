@@ -450,9 +450,10 @@ class PyAudioWPatchBackend:
 
     def get_volume(self) -> float:
         with com_initialised():
-            endpoint = self._volume()
-            # why: the loopback is tapped before the endpoint volume, so podbridge applies the dB level it would
-            return 10 ** (endpoint.GetMasterVolumeLevel() / 20) if endpoint.GetMasterVolumeLevelScalar() else 0.0
+            # why: the loopback is tapped before the endpoint volume, so podbridge applies the level Windows would; the
+            # AirPods get Windows' Bluetooth behaviour (AVRCP absolute volume, linear in the slider), not the speakers'
+            # dB curve, which leaves 30% near -50 dBFS
+            return float(self._volume().GetMasterVolumeLevelScalar())
 
     def watch_volume(self, wake: Callable[[], None]) -> Callable[[], None]:
         """Register an IAudioEndpointVolumeCallback whose OnNotify only calls `wake`.
