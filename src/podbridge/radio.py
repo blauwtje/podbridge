@@ -8,8 +8,8 @@ import usb1
 from podbridge.events import Event
 
 OPEN_FAILED_STEP = "Run podbridge restore, then try again."
-# A warm Windows restart did not revive this radio in the field; a full power-off is the untested next step.
-POWER_OFF_STEP = ("Try a full shutdown: run shutdown /s /full /t 0, wait until the laptop is off, "
+# A warm Windows restart did not revive this radio in the field; a full shutdown revived it (2026-10-20). A plain /s is a full shutdown; fast startup applies only with /hybrid.
+POWER_OFF_STEP = ("Try a full shutdown: run shutdown /s /t 0, wait until the laptop is off, "
                   "then switch it on and open podbridge again.")
 
 
