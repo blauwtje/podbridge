@@ -92,6 +92,8 @@ class AapSession:
     def _on_control(self, frame: bytes) -> None:
         if frame[4:6] == b"\x09\x00":
             log.info("control frame %s", frame.hex())
+        elif frame[4:6] == b"\x1d\x00":
+            log.info("device info frame %s", frame.hex())
         if self.on_event is None:
             self._dropped(frame)
             return
