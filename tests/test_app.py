@@ -216,3 +216,25 @@ def test_preflight_is_the_four_setup_stages():
     from podbridge import doctor
 
     assert doctor.PREFLIGHT == (doctor.admin_rights, doctor.usb_id, doctor.firmware_files, doctor.cable_devices)
+
+
+def test_run_refuses_a_cable_speaker(preflight_usb_only, monkeypatch, capsys):
+    from podbridge import audio_io, winusb
+
+    class CableSpeaker(FakeBackend):
+        def render_name(self):
+            return "CABLE In 16ch (VB-Audio Virtual Cable)"
+
+    monkeypatch.setattr(winusb, "bound", lambda *a, **k: pytest.fail("bound the driver"))
+    monkeypatch.setattr(audio_io, "PyAudioWPatchBackend", lambda output_source=None: CableSpeaker())
+    args = types.SimpleNamespace(transport="usb:0bda:887b", output_source=None, address="AA")
+    assert app.run(args, machine=object()) == 1
+    assert "default speaker" in capsys.readouterr().err
+
+
+def test_discord_hint_names_input_output_and_devices_to_ignore():
+    lines = app.DISCORD_HINT.splitlines()
+    assert len(lines) > 1
+    assert '"CABLE Output"' in app.DISCORD_HINT
+    assert '"Default"' in app.DISCORD_HINT
+    assert "CABLE Input" in app.DISCORD_HINT and "CABLE In 16ch" in app.DISCORD_HINT

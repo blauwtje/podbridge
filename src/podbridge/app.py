@@ -21,7 +21,12 @@ FIRMWARE_FILE = f"{FIRMWARE_BASE}_fw.bin"
 FIRMWARE_CONFIG = f"{FIRMWARE_BASE}_config.bin"
 FIRMWARE_URL = "https://git.kernel.org/pub/scm/linux/kernel/git/firmware/linux-firmware.git/plain/rtl_bt"
 DOWNLOAD_TIMEOUT_S = 60
-DISCORD_HINT = 'Discord: input "CABLE Output", output "Default"'
+DISCORD_HINT = (
+    "In Discord set:\n"
+    '  input  "CABLE Output"\n'
+    '  output "Default"\n'
+    'Ignore "CABLE Input" and "CABLE In 16ch": podbridge uses them itself.'
+)
 
 
 def mono_to_stereo(samples: array) -> bytes:
@@ -158,6 +163,14 @@ def run(args, machine=None) -> int:
         backend = PyAudioWPatchBackend(output_source=args.output_source)
     except Exception as exc:
         print(f"podbridge: cannot open the audio devices ({exc})", file=sys.stderr)
+        return 1
+    if not args.output_source and "CABLE In" in backend.render_name():
+        backend.close()
+        print(
+            "podbridge: the Windows default speaker is a VB-CABLE device; set it to your real speakers "
+            "or headphones and open podbridge again",
+            file=sys.stderr,
+        )
         return 1
     try:
         with winusb.bound(vid, pid, machine), muted_default_output(backend, args.output_source):
