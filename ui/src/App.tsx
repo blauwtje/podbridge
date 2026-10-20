@@ -1,5 +1,6 @@
 import { AnimatePresence, MotionConfig, motion } from 'motion/react'
 import { useSnapshot } from '@/store/snapshot'
+import { AirPodsSection } from '@/features/airpods/AirPodsSection'
 import { DiscordHint } from '@/features/session/DiscordHint'
 import { ErrorCard } from '@/features/session/ErrorCard'
 import { Notices } from '@/features/session/Notices'
@@ -9,7 +10,7 @@ import { enter, rise } from '@/features/session/motion'
 import { INK_VARS } from '@/features/session/styles'
 
 export default function App() {
-  const { steps, notices, error } = useSnapshot()
+  const { steps, notices, error, airpods } = useSnapshot()
   return (
     <MotionConfig reducedMotion="user">
       <main
@@ -29,6 +30,7 @@ export default function App() {
           <StepList steps={steps} pairingHint={pairingHint(notices)} />
           <Notices notices={notices} />
           {isDone(steps, 'connected') && <DiscordHint />}
+          <AirPodsSection airpods={airpods} />
         </div>
       </main>
     </MotionConfig>

@@ -167,3 +167,217 @@ test('Copy details explains itself when there is no app bridge', async () => {
   expect(screen.getByText(/Couldn't copy details: .+/)).toBeTruthy()
   expect(screen.getByRole('alert').textContent).toContain(failure.message)
 })
+
+type Bag = Record<string, unknown>
+
+const pods = (over: Bag = {}, settings: Bag = {}) => ({
+  name: 'Thomas AirPods',
+  model: 'AirPods Pro 2',
+  serial: 'F9XYZ123',
+  firmware: '7A305',
+  battery: { left: { level: 80, charging: true }, right: { level: 15, charging: false } },
+  in_ear: { left: true, right: false },
+  settings: {
+    listening_mode: { value: 2, status: 'confirmed' },
+    allow_off: { value: 1, status: 'confirmed' },
+    tone_volume: { value: 50, status: 'confirmed' },
+    ...settings,
+  },
+  ...over,
+})
+
+const bridge = (set_setting = vi.fn().mockResolvedValue({ ok: true })) => {
+  window.pywebview = { api: { set_setting } as never }
+  return set_setting
+}
+const modeGroup = () => screen.getByRole('radiogroup', { name: 'Listening mode' })
+const radio = (name: string) => within(modeGroup()).getByRole('radio', { name })
+
+test('shows the empty state and no controls until AirPods data arrives', () => {
+  render(<App />)
+  show({ airpods: {} })
+  expect(screen.getByText('AirPods controls appear once your AirPods connect.')).toBeTruthy()
+  expect(screen.queryByRole('radiogroup')).toBeNull()
+  expect(screen.queryByRole('switch')).toBeNull()
+})
+
+test('draws one labelled battery ring per component, with charging, low and not-reported states', () => {
+  render(<App />)
+  show({ airpods: pods() })
+  expect(screen.getByRole('img', { name: 'Left 80 percent, charging' })).toBeTruthy()
+  expect(screen.getByRole('img', { name: 'Right 15 percent, low' })).toBeTruthy()
+  expect(screen.getByRole('img', { name: 'Case not reported' })).toBeTruthy()
+  expect(screen.getByText('In ear')).toBeTruthy()
+  expect(screen.getByText('Out of ear')).toBeTruthy()
+  expect(screen.getByRole('heading', { name: 'Thomas AirPods' })).toBeTruthy()
+})
+
+test('reads odd snapshot data without throwing', () => {
+  render(<App />)
+  show({ airpods: { battery: { left: 'full', right: { level: 'high' } }, settings: { listening_mode: 7, allow_off: { value: 1, status: 'bogus' } } } })
+  expect(screen.getByRole('img', { name: 'Left not reported' })).toBeTruthy()
+  expect(screen.getByRole('img', { name: 'Right not reported' })).toBeTruthy()
+  expect(within(modeGroup()).getAllByRole('radio').every((r) => r.getAttribute('aria-checked') === 'false')).toBe(true)
+})
+
+test('listening mode is a radiogroup of four with the snapshot value checked', () => {
+  render(<App />)
+  show({ airpods: pods() })
+  const radios = within(modeGroup()).getAllByRole('radio')
+  expect(radios.map((r) => r.textContent)).toEqual(['Off', 'Noise Cancellation', 'Transparency', 'Adaptive'])
+  expect(radio('Noise Cancellation').getAttribute('aria-checked')).toBe('true')
+  expect(radio('Transparency').getAttribute('aria-checked')).toBe('false')
+})
+
+test('choosing Transparency writes 3, shows it at once and marks the row busy until confirmed', async () => {
+  const set_setting = bridge()
+  render(<App />)
+  show({ airpods: pods() })
+  expect(screen.queryAllByTestId('pending')).toHaveLength(0)
+
+  await act(async () => fireEvent.click(radio('Transparency')))
+  expect(set_setting).toHaveBeenCalledWith('listening_mode', 3)
+  expect(radio('Transparency').getAttribute('aria-checked')).toBe('true')
+  expect(modeGroup().getAttribute('aria-busy')).toBe('true')
+  expect(screen.getAllByTestId('pending')).toHaveLength(1)
+
+  show({ airpods: pods({}, { listening_mode: { value: 3, status: 'confirmed' } }) })
+  expect(screen.queryAllByTestId('pending')).toHaveLength(0)
+  expect(modeGroup().getAttribute('aria-busy')).toBeNull()
+  expect(radio('Transparency').getAttribute('aria-checked')).toBe('true')
+})
+
+test('arrow keys move the listening mode selection', async () => {
+  const set_setting = bridge()
+  render(<App />)
+  show({ airpods: pods() })
+  await act(async () => fireEvent.keyDown(radio('Noise Cancellation'), { key: 'ArrowRight' }))
+  expect(set_setting).toHaveBeenCalledWith('listening_mode', 3)
+  expect(radio('Noise Cancellation').getAttribute('tabindex')).toBe('-1')
+  expect(radio('Transparency').getAttribute('tabindex')).toBe('0')
+})
+
+test('an unsupported setting keeps the last confirmed value and says so', () => {
+  render(<App />)
+  show({ airpods: pods({}, { listening_mode: { value: 2, status: 'unsupported' } }) })
+  expect(screen.getByText('Not supported on these AirPods')).toBeTruthy()
+  expect(radio('Noise Cancellation').getAttribute('aria-checked')).toBe('true')
+})
+
+test('a rejected write reverts to the snapshot value and says why', async () => {
+  bridge(vi.fn().mockRejectedValue(new Error('link lost')))
+  render(<App />)
+  show({ airpods: pods() })
+  await act(async () => fireEvent.click(radio('Transparency')))
+  expect(screen.getByText("Couldn't change Listening mode: link lost")).toBeTruthy()
+  expect(radio('Noise Cancellation').getAttribute('aria-checked')).toBe('true')
+  expect(radio('Transparency').getAttribute('aria-checked')).toBe('false')
+  expect(screen.queryAllByTestId('pending')).toHaveLength(0)
+})
+
+test('an ok: false answer and a missing bridge are reported the same way', async () => {
+  bridge(vi.fn().mockResolvedValue({ ok: false, error: 'AirPods out of range' }))
+  render(<App />)
+  show({ airpods: pods() })
+  await act(async () => fireEvent.click(radio('Off')))
+  expect(screen.getByText("Couldn't change Listening mode: AirPods out of range")).toBeTruthy()
+
+  delete window.pywebview
+  await act(async () => fireEvent.click(radio('Adaptive')))
+  expect(screen.getByText("Couldn't change Listening mode: no connection to podbridge")).toBeTruthy()
+  expect(radio('Noise Cancellation').getAttribute('aria-checked')).toBe('true')
+})
+
+test('a switch writes 2 when turned off from 1', async () => {
+  const set_setting = bridge()
+  render(<App />)
+  show({ airpods: pods() })
+  const toggle = screen.getByRole('switch', { name: 'Allow Off' })
+  expect(toggle.getAttribute('aria-checked')).toBe('true')
+  await act(async () => fireEvent.click(toggle))
+  expect(set_setting).toHaveBeenCalledWith('allow_off', 2)
+  expect(toggle.getAttribute('aria-checked')).toBe('false')
+  expect(toggle.getAttribute('aria-busy')).toBe('true')
+})
+
+test('settings the AirPods have not reported yet are disabled and say they are waiting', () => {
+  render(<App />)
+  show({ airpods: pods() })
+  const toggle = screen.getByRole('switch', { name: 'Personalized Volume' }) as HTMLButtonElement
+  expect(toggle.disabled).toBe(true)
+  expect(screen.getAllByText('Waiting for the AirPods').length).toBeGreaterThan(1)
+})
+
+test('the tone volume slider sends one value once the user settles', async () => {
+  const set_setting = bridge()
+  render(<App />)
+  show({ airpods: pods() })
+  const slider = screen.getByRole('slider', { name: 'Tone volume' }) as HTMLInputElement
+  expect(slider.min).toBe('15')
+  expect(slider.max).toBe('100')
+  fireEvent.change(slider, { target: { value: '62' } })
+  fireEvent.change(slider, { target: { value: '64' } })
+  expect(set_setting).not.toHaveBeenCalled()
+  await act(async () => fireEvent.keyUp(slider))
+  expect(set_setting).toHaveBeenCalledTimes(1)
+  expect(set_setting).toHaveBeenCalledWith('tone_volume', 64)
+})
+
+test('the adaptive level slider is only enabled in Adaptive mode', () => {
+  render(<App />)
+  show({ airpods: pods({}, { adaptive_level: { value: 50, status: 'confirmed' } }) })
+  expect((screen.getByRole('slider', { name: 'Adaptive level' }) as HTMLInputElement).disabled).toBe(true)
+  expect(screen.getByText('Used in Adaptive mode')).toBeTruthy()
+
+  show({ airpods: pods({}, { adaptive_level: { value: 50, status: 'confirmed' }, listening_mode: { value: 4, status: 'confirmed' } }) })
+  expect((screen.getByRole('slider', { name: 'Adaptive level' }) as HTMLInputElement).disabled).toBe(false)
+})
+
+test('the press and hold cycle keeps at least two modes', async () => {
+  const set_setting = bridge()
+  render(<App />)
+  show({ airpods: pods({}, { press_hold_cycle: { value: 3, status: 'confirmed' } }) })
+  const off = screen.getByRole('checkbox', { name: 'Off' })
+  expect(off.getAttribute('aria-disabled')).toBe('true')
+  expect(screen.getByText('Choose at least two')).toBeTruthy()
+  await act(async () => fireEvent.click(off))
+  expect(set_setting).not.toHaveBeenCalled()
+  await act(async () => fireEvent.click(screen.getByRole('checkbox', { name: 'Transparency' })))
+  expect(set_setting).toHaveBeenCalledWith('press_hold_cycle', 7)
+})
+
+test('a pair setting rewrites only the element that changed', async () => {
+  const set_setting = bridge()
+  render(<App />)
+  show({ airpods: pods({}, { press_hold_action: { value: [1, 5], status: 'confirmed' } }) })
+  const left = screen.getByRole('radiogroup', { name: 'Press and hold action: Left' })
+  expect(within(left).getByRole('radio', { name: 'Siri' }).getAttribute('aria-checked')).toBe('true')
+  await act(async () => fireEvent.click(within(left).getByRole('radio', { name: 'Noise control' })))
+  expect(set_setting).toHaveBeenCalledWith('press_hold_action', [1, 1])
+})
+
+test('Apple-only features are greyed and say what they need', () => {
+  render(<App />)
+  show({ airpods: pods() })
+  const notes = screen.getAllByText('Needs an iPhone or Mac')
+  expect(notes).toHaveLength(4)
+  for (const label of ['Firmware update', 'Find My', 'Hearing test', 'Ear tip fit test'])
+    expect(screen.getByText(label).closest('li')!.getAttribute('aria-disabled')).toBe('true')
+})
+
+test('Hearing Assist appears only for enrolled users', () => {
+  render(<App />)
+  show({ airpods: pods() })
+  expect(screen.queryByRole('switch', { name: 'Hearing Assist' })).toBeNull()
+  show({ airpods: pods({ enrolled: true }) })
+  expect(screen.getByRole('switch', { name: 'Hearing Assist' })).toBeTruthy()
+})
+
+test('About shows the device details and a dash for what is missing', () => {
+  render(<App />)
+  show({ airpods: pods({ serial: undefined }) })
+  const about = screen.getByRole('region', { name: 'About' })
+  expect(about.textContent).toContain('AirPods Pro 2')
+  expect(about.textContent).toContain('7A305')
+  expect(within(about).getByText('Serial number').closest('div')!.textContent).toContain('—')
+})
