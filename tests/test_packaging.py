@@ -101,10 +101,18 @@ def test_restart_only_after_vbcable():
     assert "AlwaysRestart" not in "\n".join(iss_sections()["Setup"])
 
 
-def test_start_menu_shortcuts():
+def test_one_start_menu_shortcut_and_old_ones_removed():
+    icons = iss_sections()["Icons"]
+    assert len(icons) == 1
     assert entries("Icons", r'"{group}\podbridge"', r"{app}\podbridge.exe", '"run --pause"')
-    assert entries("Icons", r'"{group}\podbridge doctor"', '"doctor')
-    assert entries("Icons", r'"{group}\podbridge restore"', '"restore')
+    assert entries("InstallDelete", r"{group}\podbridge doctor.lnk")
+    assert entries("InstallDelete", r"{group}\podbridge restore.lnk")
+
+
+def test_setup_offers_to_start_podbridge():
+    run = entries("Run", r"{app}\podbridge.exe", '"run --pause"')
+    assert len(run) == 1
+    assert "postinstall" in run[0]
 
 
 def test_uninstaller_restores_and_removes_cert():

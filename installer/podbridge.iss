@@ -33,11 +33,14 @@ Source: "..\dist\vbcable\pack\*"; DestDir: "{app}\vbcable\pack"; Flags: ignoreve
 
 [Icons]
 Name: "{group}\podbridge"; Filename: "{app}\podbridge.exe"; Parameters: "run --pause"
-Name: "{group}\podbridge doctor"; Filename: "{app}\podbridge.exe"; Parameters: "doctor --pause"
-Name: "{group}\podbridge restore"; Filename: "{app}\podbridge.exe"; Parameters: "restore --pause"
+
+[InstallDelete]
+Type: files; Name: "{group}\podbridge doctor.lnk"
+Type: files; Name: "{group}\podbridge restore.lnk"
 
 [Run]
 Filename: "{app}\vbcable\pack\VBCABLE_Setup_x64.exe"; Parameters: "-i -h"; Check: NeedsVbCable; StatusMsg: "Installing VB-CABLE..."; Flags: waituntilterminated
+Filename: "{app}\podbridge.exe"; Parameters: "run --pause"; Description: "Start podbridge now"; Flags: postinstall nowait skipifsilent
 
 [UninstallRun]
 Filename: "{app}\podbridge.exe"; Parameters: "restore --remove-cert"; Flags: runhidden waituntilterminated; RunOnceId: "PodbridgeRestore"
