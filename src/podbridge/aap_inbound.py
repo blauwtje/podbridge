@@ -5,6 +5,7 @@ from dataclasses import dataclass
 _PREFIX = bytes.fromhex("04000400")
 _BATTERY, _EAR, _DEVICE_INFO, _CA_LEVEL = 0x0004, 0x0006, 0x001D, 0x004B
 _MAX_LEVEL = 100
+_INFO_STRINGS = 11
 
 
 @dataclass(frozen=True)
@@ -46,11 +47,11 @@ def _ear(frame: bytes) -> list | None:
     return [EarState(frame[6], frame[7])] if len(frame) >= 8 else None
 
 def _device_info(frame: bytes) -> list | None:
-
-    fields = [part.decode("utf-8", "replace") for part in frame[7:].split(b"\0")]
+    # 4-byte prefix, 2-byte opcode, 5 header bytes, then NUL-separated name, model, manufacturer, serial, FW1, ...
+    fields = [part.decode("utf-8", "replace") for part in frame[_INFO_STRINGS:].split(b"\0")]
     if len(fields) < 5:
         return None
-    return [DeviceInfo(name=fields[0], model=fields[1], serial=fields[3], firmware=fields[4])]
+    return [DeviceInfo(name=fields[0], model=fields[1], serial=fields[3], firmware=fields[4].strip())]
 
 
 def _ca_level(frame: bytes) -> list | None:
