@@ -305,7 +305,7 @@ def test_run_session_stops_when_pairing_times_out(monkeypatch):
     async def start(host, reporter, **kw):
         calls.append("radio")
 
-    async def pair(host, reporter, *rest):
+    async def pair(host, reporter, *rest, **kw):
         return None
 
     monkeypatch.setattr(radio, "start_radio", start)
@@ -325,8 +325,20 @@ class RecordingReporter:
         self.steps.append((name, status))
 
 
-def test_run_session_reports_steps_and_the_discord_hint(monkeypatch):
+def save_key(monkeypatch, tmp_path, address):
+    """APPDATA in `tmp_path` with a keys.json holding a link key for `address`."""
+    from bumble.keys import JsonKeyStore
+
+    monkeypatch.setenv("APPDATA", str(tmp_path))
+    keys = {JsonKeyStore.DEFAULT_NAMESPACE: {address: {"link_key": {"value": "00" * 16, "authenticated": False}}}}
+    paths.appdata_dir().mkdir(parents=True, exist_ok=True)
+    (paths.appdata_dir() / "keys.json").write_text(json.dumps(keys))
+
+
+def test_run_session_reports_steps_and_the_discord_hint(monkeypatch, tmp_path):
     from podbridge import pairing, radio
+
+    save_key(monkeypatch, tmp_path, "AA")
 
     async def start(host, reporter, **kw):
         pass
@@ -513,10 +525,12 @@ def test_run_names_podbridge_restore_when_the_driver_restore_fails(preflight_usb
     assert reporter.events == ["driver_restore_failed"]
 
 
-def test_closing_the_window_cancels_the_session_and_still_restores(monkeypatch):
+def test_closing_the_window_cancels_the_session_and_still_restores(monkeypatch, tmp_path):
     import threading
 
     from podbridge import pairing, radio, ui_state
+
+    save_key(monkeypatch, tmp_path, "AA")
 
     async def start(host, reporter, **kw):
         pass
@@ -628,7 +642,7 @@ def test_run_session_passes_the_session_recovery_steps_to_start_radio(monkeypatc
     async def start(host, reporter, **kw):
         seen.append(kw.get("recover"))
 
-    async def pair(host, reporter, *rest):
+    async def pair(host, reporter, *rest, **kw):
         return None
 
     monkeypatch.setattr(radio, "start_radio", start)
@@ -658,3 +672,125 @@ def test_run_gives_the_session_recovery_steps_for_its_device(preflight_usb_only,
     args = types.SimpleNamespace(transport="usb:0bda:887b", output_source="x", address="AA")
     assert app.run(args, machine=machine) == 0
     assert seen == [("steps", machine, 0x0BDA, 0x887B)]
+
+
+AIRPODS = "AA:BB:CC:DD:EE:FF"
+
+
+def test_run_session_pairs_with_a_saved_address_that_has_no_key(monkeypatch, tmp_path):
+    from bumble import hci
+
+    from podbridge import pairing, radio
+
+    monkeypatch.setenv("APPDATA", str(tmp_path))
+    seen = []
+
+    class H:
+        source = EncodedPacketSource(A2dpEncoder("sbc"))
+
+        async def close(self):
+            pass
+
+    async def start(host, reporter, **kw):
+        pass
+
+    async def pair(host, reporter, *rest, **kw):
+        seen.append(("pair", kw.get("address")))
+        return types.SimpleNamespace(peer_address=hci.Address(AIRPODS))
+
+    async def serve(host, address, link):
+        seen.append(("serve", address))
+        raise ConnectionError("stop")
+
+    monkeypatch.setattr(radio, "start_radio", start)
+    monkeypatch.setattr(pairing, "pair_with_hint", pair)
+    monkeypatch.setattr(app, "serve", serve)
+    with pytest.raises(ConnectionError):
+        asyncio.run(app.run_session(H(), FakeBackend(), app.Session(AIRPODS, RecordingReporter())))
+    assert seen == [("pair", AIRPODS), ("serve", AIRPODS)]
+    assert app.saved_address() == AIRPODS
+
+
+def _pair_with(monkeypatch, tmp_path, pair_with_hint, host_start=None, address=AIRPODS):
+    from contextlib import contextmanager
+
+    from podbridge import pairing, radio, winusb
+
+    monkeypatch.setenv("APPDATA", str(tmp_path))
+    calls, machine = [], object()
+
+    @contextmanager
+    def fake_bound(vid, pid, machine=None):
+        calls.append("bind")
+        try:
+            yield machine
+        finally:
+            calls.append("restore")
+
+    class FakeHost:
+        def __init__(self, name):
+            calls.append(("host", name))
+
+        async def start(self):
+            calls.append("start")
+            if host_start is not None:
+                await host_start()
+
+        async def close(self):
+            calls.append("close")
+
+    async def recording_start(host, reporter, **kw):
+        calls.append(("start_radio", kw.get("recover")))
+
+    monkeypatch.setattr(winusb, "bound", fake_bound)
+    monkeypatch.setattr(app, "Host", FakeHost)
+    monkeypatch.setattr(radio, "recovery_steps", lambda m, vid, pid: ("steps", m is machine, vid, pid))
+    if host_start is None:
+        monkeypatch.setattr(radio, "start_radio", recording_start)
+    monkeypatch.setattr(pairing, "pair_with_hint", pair_with_hint)
+    args = types.SimpleNamespace(transport="usb:0bda:887b", address=address)
+    return app.pair(args, machine=machine), calls
+
+
+def test_pair_starts_the_radio_with_recovery_and_pairs_the_given_address(monkeypatch, tmp_path):
+    from bumble import hci
+
+    asked = []
+
+    async def pair(host, reporter, *rest, **kw):
+        asked.append(kw.get("address"))
+        return types.SimpleNamespace(peer_address=hci.Address(AIRPODS))
+
+    status, calls = _pair_with(monkeypatch, tmp_path, pair)
+    assert status == 0
+    assert ("start_radio", ("steps", True, 0x0BDA, 0x887B)) in calls
+    assert calls[-2:] == ["close", "restore"]
+    assert asked == [AIRPODS]
+    assert app.saved_address() == AIRPODS
+
+
+def test_pair_fails_with_exit_1_when_no_airpods_pair(monkeypatch, tmp_path):
+    async def pair(host, reporter, *rest, **kw):
+        return None
+
+    status, calls = _pair_with(monkeypatch, tmp_path, pair)
+    assert status == 1
+    assert calls[-2:] == ["close", "restore"]
+    assert app.saved_address() is None
+
+
+def test_pair_reports_a_radio_that_cannot_open_in_one_line_and_logs_it(monkeypatch, tmp_path, capsys):
+    import usb1
+
+    async def denied():
+        raise usb1.USBErrorAccess()
+
+    async def pair(host, reporter, *rest, **kw):
+        raise AssertionError("pairing without a radio")
+
+    status, calls = _pair_with(monkeypatch, tmp_path, pair, host_start=denied)
+    err = capsys.readouterr().err
+    assert status == 1
+    assert "Radio problem" in err and "Traceback" not in err
+    assert (paths.appdata_dir() / "run.log").is_file()
+    assert calls[-2:] == ["close", "restore"]

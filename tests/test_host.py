@@ -120,6 +120,9 @@ class FakeLink:
     async def encrypt(self):
         self.calls.append(("encrypt", self.peer_address))
 
+    async def disconnect(self, *args, **kwargs):
+        self.calls.append(("disconnect", self))
+
 
 class FakeRadio(utils.EventEmitter):
     """A Bumble Device stand-in: inquiry answers with `found`, `accept` waits for `incoming`."""
@@ -197,3 +200,44 @@ def test_pair_times_out_once_and_stops_the_inquiry():
     assert ("start_discovery",) in radio.calls
     assert not radio.discovering
     assert radio.listeners("inquiry_result") == []
+
+
+class SlowPageRadio(FakeRadio):
+    """The page to a known address never answers; cancelling it fails in the controller."""
+
+    async def connect(self, address, transport=None):
+        self.calls.append(("connect", str(address), transport))
+        await asyncio.Event().wait()
+
+    async def cancel_connection(self, address):
+        self.calls.append(("cancel_connection", str(address)))
+        raise core.InvalidStateError("no page to cancel")
+
+
+def test_a_failing_page_cancel_is_logged_and_the_incoming_connection_still_wins(caplog):
+    radio = SlowPageRadio(incoming=AIRPODS)
+    with caplog.at_level("WARNING", logger="podbridge"):
+        link = paired(radio, address=AIRPODS)
+    assert link.peer_address == AIRPODS
+    assert ("cancel_connection", AIRPODS) in radio.calls
+    warnings = [r for r in caplog.records if r.levelname == "WARNING"]
+    assert len(warnings) == 1 and isinstance(warnings[0].exc_info[1], core.InvalidStateError)
+
+
+class BothConnectRadio(FakeRadio):
+    """The AirPods connect in and answer the page in the same loop turn."""
+
+    async def connect(self, address, transport=None):
+        self.calls.append(("connect", str(address), transport))
+        return FakeLink(str(address), self.calls)
+
+    async def accept(self, *args, **kwargs):
+        return FakeLink(self.incoming, self.calls)
+
+
+def test_when_both_connections_succeed_the_losing_one_is_disconnected():
+    radio = BothConnectRadio(incoming=AIRPODS)
+    link = paired(radio, address=AIRPODS)
+    assert sum(1 for c in radio.calls if c[0] == "connect") == 1
+    disconnected = [c[1] for c in radio.calls if c[0] == "disconnect"]
+    assert len(disconnected) == 1 and disconnected[0] is not link
