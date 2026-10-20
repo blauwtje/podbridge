@@ -69,18 +69,10 @@ async def firmware_files(ctx: Context) -> str:
     """firmware files present"""
     from podbridge import app
 
-    folder = paths.firmware_dir()
-    if not (folder / app.FIRMWARE_FILE).is_file():
-        target = paths.appdata_dir() / "firmware"
-        target.mkdir(parents=True, exist_ok=True)
-        error = app.fetch(target / app.FIRMWARE_FILE)
-        if error:
-            raise StageFailed(
-                f"missing {app.FIRMWARE_FILE} and the download failed ({error}); "
-                "connect to the internet and open podbridge again"
-            )
-        folder = paths.firmware_dir()
-    return str(folder)
+    try:
+        return str(app.ensure_firmware())
+    except app.FirmwareError as exc:
+        raise StageFailed(str(exc)) from exc
 
 
 async def winusb_bind(ctx: Context) -> None:

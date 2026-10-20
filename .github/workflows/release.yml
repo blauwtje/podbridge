@@ -17,7 +17,10 @@ jobs:
       LIBWDI_VERSION: v1.5.1
       VBCABLE_URL: https://download.vb-audio.com/Download_CABLE/VBCABLE_Driver_Pack45.zip
       FIRMWARE_LICENCE_URL: https://git.kernel.org/pub/scm/linux/kernel/git/firmware/linux-firmware.git/plain/LICENCE.rtlwifi_firmware.txt
-      FIRMWARE_URL: https://git.kernel.org/pub/scm/linux/kernel/git/firmware/linux-firmware.git/plain/rtl_bt/rtl8852bu_fw.bin
+      # Same commit and sha256 as FIRMWARE_URL and FIRMWARE_SHA256 in src/podbridge/app.py:
+      # the last EPATCH v1 file, the only format the pinned Bumble reads.
+      FIRMWARE_URL: https://git.kernel.org/pub/scm/linux/kernel/git/firmware/linux-firmware.git/plain/rtl_bt/rtl8852bu_fw.bin?id=0061a2dde6c3ad74dd5dbfa0f645408bf846f9cd
+      FIRMWARE_SHA256: f1e0427317f147a78606ede85f3f8977ed0ab85c41c6b525560e5bd5a51e5818
       WDK_URL: https://go.microsoft.com/fwlink/p/?LinkID=253170
       LIBUSB0_URL: https://github.com/mcuee/libusb-win32/releases/download/release_1.4.0.0/libusb-win32-bin-1.4.0.0.zip
       LIBUSBK_URL: https://github.com/mcuee/libusbk/releases/download/V3.1.0.0/libusbK-3.1.0.0-bin.7z
@@ -43,6 +46,8 @@ jobs:
           Invoke-WebRequest -Uri $env:FIRMWARE_URL -OutFile dist/firmware/rtl8852bu_fw.bin
           Invoke-WebRequest -Uri $env:FIRMWARE_LICENCE_URL -OutFile dist/firmware/LICENCE.rtlwifi_firmware.txt
           if (-not (Test-Path "dist/firmware/rtl8852bu_fw.bin")) { throw "missing firmware file rtl8852bu_fw.bin" }
+          $actual = (Get-FileHash dist/firmware/rtl8852bu_fw.bin -Algorithm SHA256).Hash.ToLower()
+          if ($actual -ne $env:FIRMWARE_SHA256) { throw "rtl8852bu_fw.bin sha256 $actual is not the pinned $env:FIRMWARE_SHA256" }
 
       - name: Fetch VB-CABLE
         shell: pwsh

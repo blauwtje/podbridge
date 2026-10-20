@@ -80,14 +80,29 @@ def test_stage_order_follows_decision_17():
     ]
 
 
+FIRMWARE = b"Realtech" + b"x" * 64  # a fake EPATCH v1 file; tests pin its sha256 in place of the real one
+
+
+def pin_fake_firmware(monkeypatch, tmp_path):
+    import hashlib
+
+    from podbridge import app
+
+    monkeypatch.setattr(paths, "install_dir", lambda: tmp_path / "install")
+    monkeypatch.setattr(app, "FIRMWARE_SHA256", hashlib.sha256(FIRMWARE).hexdigest())
+    folder = paths.appdata_dir() / "firmware"
+    folder.mkdir(parents=True, exist_ok=True)
+    return folder
+
+
 def test_firmware_stage_names_missing_file(monkeypatch, tmp_path):
     from podbridge import app
 
-    monkeypatch.setattr(paths, "firmware_dir", lambda: tmp_path)
+    folder = pin_fake_firmware(monkeypatch, tmp_path)
     monkeypatch.setattr(app, "fetch", lambda destination: OSError("offline"))
     assert run([doctor.firmware_files]) is False
-    (tmp_path / "rtl8852bu_fw.bin").write_bytes(b"x")
-    (tmp_path / "rtl8852bu_config.bin").write_bytes(b"x")
+    (folder / "rtl8852bu_fw.bin").write_bytes(FIRMWARE)
+    (folder / "rtl8852bu_config.bin").write_bytes(b"x")
     assert run([doctor.firmware_files]) is True
 
 
@@ -135,8 +150,8 @@ def test_loopback_stage_needs_nonzero_samples_and_restores_mute(loopback, expect
 
 
 def test_firmware_stage_config_file_is_optional(monkeypatch, tmp_path):
-    monkeypatch.setattr(paths, "firmware_dir", lambda: tmp_path)
-    (tmp_path / "rtl8852bu_fw.bin").write_bytes(b"x")
+    folder = pin_fake_firmware(monkeypatch, tmp_path)
+    (folder / "rtl8852bu_fw.bin").write_bytes(FIRMWARE)
     assert run([doctor.firmware_files]) is True
 
 

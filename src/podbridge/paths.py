@@ -17,8 +17,10 @@ def appdata_dir() -> Path:
 
 
 def firmware_dir() -> Path:
-    """Downloaded firmware when `podbridge firmware` filled it, else the bundled folder."""
+    """The downloaded folder when it holds a valid firmware file, else the folder the installer ships."""
+    from podbridge import app
+
     downloaded = appdata_dir() / "firmware"
-    if downloaded.is_dir() and any(downloaded.iterdir()):
+    if (downloaded / app.FIRMWARE_FILE).is_file() and app.file_problem(downloaded / app.FIRMWARE_FILE) is None:
         return downloaded
     return install_dir() / "firmware"

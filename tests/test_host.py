@@ -61,10 +61,16 @@ def test_device_uses_json_keystore_and_registers_records(tmp_path):
 
 
 def test_firmware_env_follows_firmware_dir(monkeypatch, tmp_path):
+    import hashlib
+
+    from podbridge import app
+
+    firmware = b"Realtech" + b"x" * 64
+    monkeypatch.setattr(app, "FIRMWARE_SHA256", hashlib.sha256(firmware).hexdigest())
     monkeypatch.setenv("APPDATA", str(tmp_path))
     fw = tmp_path / "podbridge" / "firmware"
     fw.mkdir(parents=True)
-    (fw / "rtl8761bu_fw.bin").write_bytes(b"x")
+    (fw / "rtl8852bu_fw.bin").write_bytes(firmware)
     monkeypatch.delenv("BUMBLE_RTK_FIRMWARE_DIR", raising=False)
     assert host.use_firmware_folder() == str(fw)
     assert os.environ["BUMBLE_RTK_FIRMWARE_DIR"] == str(fw)

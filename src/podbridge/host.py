@@ -57,7 +57,9 @@ def sdp_records() -> dict[int, list[sdp.ServiceAttribute]]:
 
 def use_firmware_folder() -> str:
     """Point Bumble's Realtek driver at the firmware folder of Decision 11."""
-    folder = str(paths.firmware_dir())
+    from podbridge import app  # app imports this module
+
+    folder = str(app.ensure_firmware())
     os.environ["BUMBLE_RTK_FIRMWARE_DIR"] = folder
     return folder
 

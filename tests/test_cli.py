@@ -31,10 +31,16 @@ def test_lazy_dispatch(monkeypatch):
 
 
 def test_firmware_dir_prefers_downloaded(tmp_path, monkeypatch):
+    import hashlib
+
+    from podbridge import app
+
+    firmware = b"Realtech" + b"x" * 64
+    monkeypatch.setattr(app, "FIRMWARE_SHA256", hashlib.sha256(firmware).hexdigest())
     monkeypatch.setenv("APPDATA", str(tmp_path))
     assert paths.firmware_dir() == paths.install_dir() / "firmware"
     (tmp_path / "podbridge" / "firmware").mkdir(parents=True)
-    (tmp_path / "podbridge" / "firmware" / "rtl8852bu_fw.bin").write_bytes(b"x")
+    (tmp_path / "podbridge" / "firmware" / "rtl8852bu_fw.bin").write_bytes(firmware)
     assert paths.firmware_dir() == tmp_path / "podbridge" / "firmware"
 
 

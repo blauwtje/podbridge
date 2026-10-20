@@ -1,6 +1,8 @@
 """The `run`, `pair` and `firmware` commands: two asyncio pipelines inside the WinUSB bind (Decision 14)."""
 import asyncio
+import hashlib
 import json
+import logging
 import sys
 import urllib.request
 from array import array
@@ -19,8 +21,18 @@ USB_CANDIDATES = ((0x13D3, 0x3571), (0x0BDA, 0x887B), (0x0CB8, 0xC559))
 FIRMWARE_BASE = "rtl8852bu"
 FIRMWARE_FILE = f"{FIRMWARE_BASE}_fw.bin"
 FIRMWARE_CONFIG = f"{FIRMWARE_BASE}_config.bin"
-FIRMWARE_URL = "https://git.kernel.org/pub/scm/linux/kernel/git/firmware/linux-firmware.git/plain/rtl_bt"
+# Last linux-firmware commit whose rtl8852bu_fw.bin is EPATCH v1 ("Realtech"), the only format
+# the pinned Bumble reads. Later commits ship EPATCH v2 ("RTBTCore"), which makes Firmware() raise.
+FIRMWARE_COMMIT = "0061a2dde6c3ad74dd5dbfa0f645408bf846f9cd"
+FIRMWARE_URL = (
+    "https://git.kernel.org/pub/scm/linux/kernel/git/firmware/linux-firmware.git/plain/rtl_bt/{name}?id="
+    + FIRMWARE_COMMIT
+)
+FIRMWARE_SHA256 = "f1e0427317f147a78606ede85f3f8977ed0ab85c41c6b525560e5bd5a51e5818"
+FIRMWARE_MAGIC = b"Realtech"
+FIRMWARE_V2_MAGIC = b"RTBTCore"
 DOWNLOAD_TIMEOUT_S = 60
+log = logging.getLogger("podbridge")
 DISCORD_HINT = (
     "In Discord set:\n"
     '  input  "CABLE Output"\n'
@@ -211,12 +223,94 @@ def download(url: str) -> bytes:
         return response.read()
 
 
-def fetch(destination) -> OSError | None:
+class FirmwareError(RuntimeError):
+    """No usable firmware file; the message names the file, why it was rejected and what to do."""
+
+
+def firmware_problem(name: str, data: bytes) -> str | None:
+    """Why `data` cannot be used as firmware file `name`, or None. Every firmware path calls this."""
+    if name != FIRMWARE_FILE:
+        return None
+    if not data.startswith(FIRMWARE_MAGIC):
+        if data.startswith(FIRMWARE_V2_MAGIC):
+            return "EPATCH v2 firmware, Bumble reads only v1"
+        if data.lstrip()[:1] == b"<":
+            return "an HTML page, not firmware"
+        if len(data) < len(FIRMWARE_MAGIC):
+            return f"only {len(data)} bytes, not firmware"
+        return f"does not start with the EPATCH v1 signature {FIRMWARE_MAGIC.decode()!r}"
+    digest = hashlib.sha256(data).hexdigest()
+    if digest != FIRMWARE_SHA256:
+        return f"sha256 {digest[:12]} is not the pinned {FIRMWARE_SHA256[:12]}"
+    return None
+
+
+def file_problem(path) -> str | None:
     try:
-        destination.write_bytes(download(f"{FIRMWARE_URL}/{destination.name}"))
+        return firmware_problem(path.name, path.read_bytes())
+    except OSError as exc:
+        return f"cannot be read ({exc})"
+
+
+def set_aside(path, reason: str) -> None:
+    """Rename a rejected file so it is kept, never silently deleted."""
+    target = path.with_name(path.name + ".rejected")
+    number = 0
+    while target.exists():
+        number += 1
+        target = path.with_name(f"{path.name}.rejected.{number}")
+    try:
+        path.replace(target)
+    except OSError as exc:
+        log.warning("firmware %s rejected (%s) and could not be set aside: %s", path, reason, exc)
+        return
+    log.warning("firmware %s rejected (%s); kept as %s", path, reason, target.name)
+
+
+def fetch(destination) -> Exception | None:
+    """Download the pinned file next to `destination`, verify it, and move it into place."""
+    url = FIRMWARE_URL.format(name=destination.name)
+    try:
+        data = download(url)
+    except OSError as exc:
+        return exc
+    problem = firmware_problem(destination.name, data)
+    if problem:
+        return FirmwareError(f"{destination.name} from {url} was rejected: {problem}")
+    partial = destination.with_name(destination.name + ".part")
+    try:
+        partial.write_bytes(data)
+        partial.replace(destination)
     except OSError as exc:
         return exc
     return None
+
+
+def ensure_firmware():
+    """Folder holding a valid firmware file: AppData copy, installer copy, then the pinned download."""
+    downloaded = paths.appdata_dir() / "firmware"
+    problems = []
+    for folder in (downloaded, paths.install_dir() / "firmware"):
+        file = folder / FIRMWARE_FILE
+        if not file.is_file():
+            continue
+        problem = file_problem(file)
+        if problem is None:
+            return folder
+        problems.append(f"{file} is {problem}")
+        set_aside(file, problem)
+    try:
+        downloaded.mkdir(parents=True, exist_ok=True)
+        error = fetch(downloaded / FIRMWARE_FILE)
+    except OSError as exc:
+        error = exc
+    if error is None:
+        return downloaded
+    problems.append(f"the download failed: {error}")
+    raise FirmwareError(
+        f"no usable {FIRMWARE_FILE}: {'; '.join(problems)}. "
+        "Connect to the internet and open podbridge again, or reinstall podbridge"
+    )
 
 
 def firmware(args) -> int:

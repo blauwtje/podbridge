@@ -1,4 +1,5 @@
 import asyncio
+import hashlib
 import json
 import types
 
@@ -66,23 +67,28 @@ def test_parse_transport():
         app.parse_transport("serial:1:2")
 
 
+FAKE_FIRMWARE = b"Realtech" + b"x" * 64  # a fake EPATCH v1 file; its sha256 stands in for the pinned one
+
+
 def test_firmware_downloads_to_appdata(tmp_path, monkeypatch):
     monkeypatch.setenv("APPDATA", str(tmp_path))
+    monkeypatch.setattr(app, "FIRMWARE_SHA256", hashlib.sha256(FAKE_FIRMWARE).hexdigest())
     urls = []
-    monkeypatch.setattr(app, "download", lambda url: urls.append(url) or b"x")
+    monkeypatch.setattr(app, "download", lambda url: urls.append(url) or FAKE_FIRMWARE)
     assert app.firmware(None) == 0
-    assert [u.rsplit("/", 1)[1] for u in urls] == [app.FIRMWARE_FILE, app.FIRMWARE_CONFIG]
+    assert [u.rsplit("/", 1)[1].split("?")[0] for u in urls] == [app.FIRMWARE_FILE, app.FIRMWARE_CONFIG]
     assert paths.firmware_dir() == tmp_path / "podbridge" / "firmware"
-    assert (paths.firmware_dir() / app.FIRMWARE_FILE).read_bytes() == b"x"
+    assert (paths.firmware_dir() / app.FIRMWARE_FILE).read_bytes() == FAKE_FIRMWARE
 
 
 def test_firmware_config_is_optional_but_firmware_is_not(tmp_path, monkeypatch):
     monkeypatch.setenv("APPDATA", str(tmp_path))
+    monkeypatch.setattr(app, "FIRMWARE_SHA256", hashlib.sha256(FAKE_FIRMWARE).hexdigest())
 
     def only_firmware(url):
         if url.endswith(app.FIRMWARE_CONFIG):
             raise OSError("404")
-        return b"x"
+        return FAKE_FIRMWARE
 
     monkeypatch.setattr(app, "download", only_firmware)
     assert app.firmware(None) == 0
