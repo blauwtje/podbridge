@@ -208,3 +208,15 @@ def test_mic_silent_reported_once_when_no_frames_arrive(monkeypatch):
     assert [e.kind for e in emitted] == ["mic_silent"]
     assert "switch to the AirPods, run podbridge doctor" in emitted[0].message
     assert channel.sent.count(aap.START) >= 5
+
+
+def test_dropped_sdus_are_logged_as_hex_and_control_frames_too(caplog):
+    import logging
+
+    caplog.set_level(logging.INFO, logger="podbridge")
+    session = AapSession(None, asyncio.Queue(), on_event=lambda event: None)
+    junk, control = b"\x00junk", aap.control(0x01, 2)
+    session._on_sdu(junk)
+    session._on_sdu(control)
+    assert f"dropped inbound SDU {junk.hex()}" in caplog.text
+    assert f"control frame {control.hex()}" in caplog.text

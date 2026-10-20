@@ -927,3 +927,45 @@ def test_pair_reports_a_radio_that_cannot_open_in_one_line_and_logs_it(monkeypat
     assert "Radio problem" in err and "Traceback" not in err
     assert (paths.appdata_dir() / "run.log").is_file()
     assert calls[-2:] == ["close", "restore"]
+
+
+def test_run_writes_session_log_with_the_steps(preflight_usb_only, monkeypatch, tmp_path):
+    import logging
+    from contextlib import contextmanager
+
+    from podbridge import audio_io, winusb
+
+    @contextmanager
+    def bound(vid, pid, machine=None):
+        yield machine
+
+    async def session(*rest):
+        logging.getLogger("podbridge").info("inside the session")
+
+    monkeypatch.setattr(winusb, "bound", bound)
+    monkeypatch.setattr(audio_io, "PyAudioWPatchBackend", lambda output_source=None: FakeBackend())
+    monkeypatch.setattr(app, "run_session", session)
+    args = types.SimpleNamespace(transport="usb:0bda:887b", output_source="x", address="AA")
+    assert app.run(args, machine=object()) == 0
+    text = (tmp_path / "podbridge" / "session.log").read_text(encoding="utf-8")
+    assert "step checks active" in text and "inside the session" in text
+    assert not [h for h in logging.getLogger("podbridge").handlers if isinstance(h, logging.FileHandler)]
+
+
+def test_output_pipeline_logs_a_stats_line(monkeypatch, caplog):
+    import logging
+
+    monkeypatch.setattr(app, "STATS_S", 0.0)
+    caplog.set_level(logging.INFO, logger="podbridge")
+
+    async def go():
+        source = EncodedPacketSource(A2dpEncoder("aac"))
+        task = asyncio.create_task(app.output_pipeline(FakeBackend(loopback=selftest.tone()), lambda: source))
+        assert await selftest.wait_until(lambda: "output stats" in caplog.text)
+        task.cancel()
+        return source
+
+    source = asyncio.run(go())
+    line = next(r.getMessage() for r in caplog.records if "output stats" in r.getMessage())
+    assert "frames=" in line and "silent_reads=0" in line and "peak=" in line
+    assert f"EncodedPacketSource#{id(source)}" in line and "current_source_none=False" in line
