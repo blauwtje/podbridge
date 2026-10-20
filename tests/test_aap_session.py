@@ -174,3 +174,37 @@ def test_channel_failures_are_reported_retried_and_close_restarts(monkeypatch):
     kinds = [e.kind for e in emitted]
     assert kinds == ["aap_retry", "aap_retry", "mic_unavailable", "aap_retry"]
     assert emitted[2].message == "mic unavailable, audio output only"
+
+
+def test_mic_silent_reported_once_when_no_frames_arrive(monkeypatch):
+    fast(monkeypatch)
+    monkeypatch.setattr(aap_session, "MIC_SILENT_RESTARTS", 2)
+    emitted = []
+
+    class Reporter:
+        def emit(self, event):
+            emitted.append(event)
+
+    class Channel:
+        def __init__(self):
+            self.sent = []
+
+        def write(self, data):
+            self.sent.append(data)
+
+    channel = Channel()
+
+    class Connection:
+        async def create_l2cap_channel(self, spec):
+            return channel
+
+    async def scenario():
+        session = AapSession(Connection(), asyncio.Queue(), reporter=Reporter())
+        task = asyncio.create_task(session.run())
+        await asyncio.wait_for(_until(lambda: session.restarts >= 4), 5)
+        task.cancel()
+
+    asyncio.run(scenario())
+    assert [e.kind for e in emitted] == ["mic_silent"]
+    assert "switch to the AirPods, run podbridge doctor" in emitted[0].message
+    assert channel.sent.count(aap.START) >= 5

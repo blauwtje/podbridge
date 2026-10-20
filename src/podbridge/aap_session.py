@@ -20,6 +20,8 @@ POLL_S = 0.25
 AAP_RETRY_S = 10.0
 AAP_GIVE_UP = 6
 UNAVAILABLE = "mic unavailable, audio output only"
+MIC_SILENT_RESTARTS = 3
+MIC_SILENT = "The AirPods send no mic audio; switch to the AirPods, run podbridge doctor"
 
 
 class AapSession:
@@ -38,6 +40,8 @@ class AapSession:
         self.reporter = options.get("reporter")
         self.outgoing: asyncio.Queue = asyncio.Queue()
         self.restarts = 0
+        self.frames_seen = 0
+        self._silent_reported = False
         self._last_frame = 0.0
         self._last_start = 0.0
 
@@ -64,6 +68,7 @@ class AapSession:
             return
         for unit in aap.parse_mic_sdu(sdu):
             self._last_frame = self.clock()
+            self.frames_seen += 1
             self.queue.put_nowait(unit)
 
     def _on_control(self, frame: bytes) -> None:
@@ -121,3 +126,9 @@ class AapSession:
                 channel.write(aap.START)
                 self._last_start = now
                 self.restarts += 1
+                self._check_silent()
+
+    def _check_silent(self) -> None:
+        if self.restarts >= MIC_SILENT_RESTARTS and self.frames_seen == 0 and not self._silent_reported:
+            self._silent_reported = True
+            self._emit("mic_silent", MIC_SILENT, self.restarts)
