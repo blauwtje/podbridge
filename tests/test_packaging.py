@@ -208,3 +208,9 @@ def test_script_functions_do_not_shadow_the_commands_they_run():
         functions = {name.lower() for name in re.findall(r"(?im)^\s*function\s+([\w-]+)", text)}
         commands = {name.lower() for name in re.findall(r"&\s*([A-Za-z][\w.-]*)", text)}
         assert not functions & commands, f"{script.name}: {sorted(functions & commands)}"
+
+
+def test_dev_script_passes_bare_words_to_podbridge_not_to_its_options():
+    """Without PositionalBinding off, `dev.ps1 doctor` binds `doctor` to -Remote and fetches a remote named doctor."""
+    code = DEV.read_text(encoding="utf-8").split("#>", 1)[1]
+    assert re.match(r"\s*\[CmdletBinding\(PositionalBinding\s*=\s*\$false\)\]\s*param\(", code)
