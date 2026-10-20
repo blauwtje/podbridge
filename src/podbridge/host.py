@@ -8,7 +8,7 @@ from bumble.device import Device
 from bumble.keys import JsonKeyStore
 from bumble.transport import open_transport
 
-from podbridge import paths
+from podbridge import paths, rtk_download
 from podbridge.a2dp_encoder import SAMPLE_RATE, SBC_SAMPLE_RATE, A2dpEncoder
 
 log = logging.getLogger("podbridge")
@@ -199,6 +199,7 @@ class Host:
 
     async def start(self) -> Device:
         use_firmware_folder()
+        rtk_download.install()
         self._transport = await open_transport(self.transport_name)
         self.device = build_device(self._transport.source, self._transport.sink)
         await self.device.power_on()
