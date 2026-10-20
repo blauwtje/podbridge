@@ -224,3 +224,16 @@ def test_transport_stage_fails_within_its_timeout_and_names_the_next_step(monkey
     fail = [line for line in capsys.readouterr().out.splitlines() if line.startswith("FAIL")]
     assert len(fail) == 1 and "resetting it" in fail[0] and "shutdown /s /full" in fail[0]
     assert Hanging.closed >= 1
+
+
+def test_second_instance_is_not_told_to_run_restore(capsys):
+    from podbridge import winusb
+
+    def taken():
+        raise winusb.AlreadyRunning(winusb.ALREADY_RUNNING)
+
+    ctx = doctor.Context(machine=winusb.Machine(single_instance=taken), vid=0x0BDA, pid=0x887B)
+    assert run([doctor.winusb_bind], ctx) is False
+    out = capsys.readouterr()
+    assert "another podbridge is running" in out.out + out.err
+    assert "podbridge restore" not in out.out + out.err
