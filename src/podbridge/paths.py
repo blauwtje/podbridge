@@ -4,10 +4,22 @@ import sys
 from pathlib import Path
 
 
+INSTALL_DIR_ENV = "PODBRIDGE_INSTALL_DIR"
+BUNDLE_CONTENTS = "_internal"  # PyInstaller 6 onedir: sys._MEIPASS is <install>/_internal
+
+
 def install_dir() -> Path:
-    """Folder of the installed exe, or the source tree when run from source."""
+    """Folder of the installed exe; from source, the install named by PODBRIDGE_INSTALL_DIR, else the source tree.
+
+    A source run that sets PODBRIDGE_INSTALL_DIR to an installed podbridge uses that install's
+    firmware, wdi-simple.exe and driver state, so it needs no build of its own. A frozen exe
+    always uses its own folder and ignores the variable.
+    """
     if getattr(sys, "frozen", False):
         return Path(sys.executable).parent
+    override = os.environ.get(INSTALL_DIR_ENV)
+    if override:
+        return Path(override)
     return Path(__file__).resolve().parents[2]
 
 

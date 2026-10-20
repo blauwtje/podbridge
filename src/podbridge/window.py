@@ -6,6 +6,7 @@ import sys
 import threading
 from pathlib import Path
 
+from podbridge import paths
 from podbridge.ui_state import Api
 
 log = logging.getLogger("podbridge")
@@ -36,10 +37,15 @@ def webview2_present() -> bool:
 
 
 def web_dir() -> Path:
-    """The built UI: inside the PyInstaller bundle, or the source tree."""
+    """The built UI: inside the PyInstaller bundle; from source, the source tree's build, else the install's."""
     bundle = getattr(sys, "_MEIPASS", None)
-    base = Path(bundle) if bundle else Path(__file__).resolve().parent
-    return base / "podbridge" / "web" if bundle else base / "web"
+    if bundle:
+        return Path(bundle) / "podbridge" / "web"
+    source = Path(__file__).resolve().parent / "web"
+    installed = paths.install_dir() / paths.BUNDLE_CONTENTS / "podbridge" / "web"
+    if not (source / "index.html").is_file() and (installed / "index.html").is_file():
+        return installed
+    return source
 
 
 def storage_dir() -> Path:

@@ -172,6 +172,26 @@ Or restart Windows. Windows then reinstalls the Realtek driver.
 
 podbridge gives the Realtek driver back on exit. The installer already bundles the Realtek firmware.
 
+## Run the newest source (developers)
+
+To try a fix without a GitHub Actions build, run podbridge from source. It uses the installed app's firmware, `wdi-simple.exe`, driver state and window UI, so install `podbridge-setup.exe` once first. You need Git and uv (`winget install astral-sh.uv`).
+
+Once:
+
+```
+git clone https://github.com/blauwtje/podbridge.git
+```
+
+Each time, in a normal (not admin) PowerShell:
+
+```
+powershell -ExecutionPolicy Bypass -File podbridge\scripts\dev.ps1
+```
+
+It fetches the current branch from the push remote, fast-forwards, runs `uv sync`, and starts `podbridge run` as admin in a new window (one UAC prompt). Pass other commands after it, such as `dev.ps1 doctor` or `dev.ps1 run --console`. Use `-Branch <name>` for another branch, `-NoPull` to keep the checkout, and `-InstallDir <folder>` when podbridge is not installed in the usual place.
+
+Close the installed podbridge first; only one can own the radio. A source run never updates itself. It sets `PODBRIDGE_INSTALL_DIR` to the install folder. It uses the source UI only when you built it (`npm --prefix ui ci`, then `npm --prefix ui run build`).
+
 ## Notices
 
 - Firmware: the installer bundles the unmodified Realtek firmware files from the Linux kernel firmware tree, with `LICENCE.rtlwifi_firmware.txt`, in `<install>\firmware`.
