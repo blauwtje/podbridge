@@ -140,6 +140,24 @@ def test_quiet_run_prints_and_logs_nothing_on_a_pass(capsys, appdata):
     assert len((appdata / "podbridge" / "doctor.log").read_text().splitlines()) == 1
 
 
+def test_loopback_stage_saves_the_prior_mute_state_next_to_the_driver_state(tmp_path):
+    from types import SimpleNamespace
+
+    saved = []
+
+    class Backend(FakeBackend):
+        def read_loopback(self, frames):
+            saved.append((tmp_path / "mute-state.json").exists())
+            return super().read_loopback(frames)
+
+    backend = Backend(loopback=tone(), muted=False)
+    machine = SimpleNamespace(state_path=tmp_path / "driver-state.json")
+    ctx = doctor.Context(machine=machine, backend_factory=lambda: backend)
+    assert run([doctor.loopback_while_muted], ctx) is True
+    assert saved and all(saved)
+    assert not (tmp_path / "mute-state.json").exists()
+
+
 @pytest.mark.parametrize("loopback, expected", [(tone(), True), (b"", False)])
 def test_loopback_stage_needs_nonzero_samples_and_restores_mute(loopback, expected):
     backend = FakeBackend(loopback=loopback, muted=False)

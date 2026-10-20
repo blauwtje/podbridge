@@ -695,6 +695,31 @@ def test_a_failed_mute_restore_is_not_reported_as_a_driver_restore_failure(prefl
     assert event.kind != "driver_restore_failed" and "audio endpoint gone" in event.message
 
 
+def test_run_saves_the_prior_mute_state_next_to_the_driver_state(preflight_usb_only, monkeypatch, tmp_path):
+    from contextlib import contextmanager
+
+    from podbridge import audio_io, winusb
+
+    mute_state = tmp_path / "mute-state.json"
+    saved = []
+
+    @contextmanager
+    def bound(vid, pid, machine=None):
+        yield machine
+
+    async def session(*rest):
+        saved.append(mute_state.exists())
+
+    monkeypatch.setattr(winusb, "bound", bound)
+    monkeypatch.setattr(audio_io, "PyAudioWPatchBackend", lambda output_source=None: FakeBackend())
+    monkeypatch.setattr(app, "run_session", session)
+    machine = winusb.Machine(state_path=tmp_path / "driver-state.json", single_instance=lambda: lambda: None)
+    args = types.SimpleNamespace(transport="usb:0bda:887b", output_source=None, address="AA")
+    app.run(args, machine=machine, reporter=types.SimpleNamespace(emit=lambda event: None))
+    assert saved == [True]
+    assert not mute_state.exists()
+
+
 def test_a_window_close_during_the_radio_start_still_closes_the_host(monkeypatch):
     from podbridge import radio, ui_state
 

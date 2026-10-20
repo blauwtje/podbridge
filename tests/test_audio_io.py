@@ -36,6 +36,31 @@ def test_mute_restores_on_error():
     assert b.muted is False
 
 
+def test_mute_state_survives_a_hard_kill(tmp_path, monkeypatch):
+    """A killed run leaves the endpoint muted; the next run restores the state saved before the first mute."""
+    from podbridge import audio_io
+
+    monkeypatch.setattr(audio_io.atexit, "register", lambda restore: None)
+    path = tmp_path / "mute-state.json"
+    b = FakeBackend(muted=False)
+    killed = muted_default_output(b, state_path=path)
+    killed.__enter__()  # killed here: no exit code runs; the name keeps GC from closing it
+    assert b.muted is True
+    with muted_default_output(b, state_path=path):
+        assert b.muted is True
+    assert b.muted is False
+    assert not path.exists()
+
+
+def test_unreadable_mute_state_uses_the_current_state(tmp_path):
+    path = tmp_path / "mute-state.json"
+    path.write_text("not json")
+    b = FakeBackend(muted=True)
+    with muted_default_output(b, state_path=path):
+        assert b.muted is True
+    assert b.muted is True and not path.exists()
+
+
 def test_output_source_skips_mute():
     b = FakeBackend(muted=False)
     with muted_default_output(b, "Speakers"):
