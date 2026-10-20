@@ -1,10 +1,13 @@
 """Audio capture, playback and endpoint mute behind one backend protocol."""
 import atexit
+import json
+import os
 import threading
 import time
 import warnings
 from array import array
 from contextlib import contextmanager
+from pathlib import Path
 from typing import Iterator, Protocol
 
 from podbridge import winusb
@@ -45,16 +48,48 @@ class AudioBackend(Protocol):
     def close(self) -> None: ...
 
 
+MUTE_STATE_FILE = "mute-state.json"
+
+
+def mute_state_path(machine) -> Path | None:
+    """mute-state.json next to the driver state, or None for a machine without one."""
+    state_path = getattr(machine, "state_path", None)
+    return state_path.with_name(MUTE_STATE_FILE) if state_path is not None else None
+
+
+def saved_mute(path: Path | None) -> bool | None:
+    """The mute state a killed run saved before it muted, or None when there is none."""
+    try:
+        muted = json.loads(path.read_text(encoding="utf-8"))["muted"] if path else None
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
+    return muted if isinstance(muted, bool) else None
+
+
+def save_mute(path: Path | None, muted: bool) -> None:
+    if path is None:
+        return
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_text(json.dumps({"muted": muted}), encoding="utf-8")
+    os.replace(tmp, path)
+
+
 @contextmanager
-def muted_default_output(backend: AudioBackend, output_source: str | None = None) -> Iterator[None]:
+def muted_default_output(backend: AudioBackend, output_source: str | None = None,
+                         state_path: Path | None = None) -> Iterator[None]:
     """Mute the default render endpoint (Decision 15); restore the prior state on exit.
 
     Does nothing when `output_source` is given. Restores in finally, atexit and on console close.
+    The prior state is also saved to `state_path`, so a run after a hard kill restores it, not the kill's mute.
     """
     if output_source:
         yield
         return
-    prior = backend.get_mute()
+    prior = saved_mute(state_path)
+    if prior is None:
+        prior = backend.get_mute()
+        save_mute(state_path, prior)
     restored = False
     lock = threading.Lock()
 
@@ -64,6 +99,8 @@ def muted_default_output(backend: AudioBackend, output_source: str | None = None
             if not restored:
                 backend.set_mute(prior)
                 restored = True
+                if state_path is not None:
+                    state_path.unlink(missing_ok=True)
 
     atexit.register(restore)
     handler = winusb.install_close_handler(restore)

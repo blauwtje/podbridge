@@ -12,7 +12,7 @@ from typing import Callable, NamedTuple
 from podbridge import crash, paths
 from podbridge.aap_session import AapSession
 from podbridge.events import ConsoleReporter, Event
-from podbridge.audio_io import CABLE_PLAYBACK, AudioBackend, muted_default_output
+from podbridge.audio_io import CABLE_PLAYBACK, AudioBackend, muted_default_output, mute_state_path
 from podbridge.host import EncodedPacketSource, Host
 from podbridge.mic_decoder import MicDecoder
 
@@ -367,7 +367,9 @@ def run(args, machine=None, reporter=None) -> int:
     session_done = False
     try:
         step(reporter, "driver", "active")
-        with winusb.bound(vid, pid, machine), muted_default_output(backend, args.output_source):
+        with winusb.bound(vid, pid, machine), muted_default_output(
+            backend, args.output_source, mute_state_path(machine)
+        ):
             step(reporter, "driver", "done")
             host = Host(f"usb:{vid:04X}:{pid:04X}")
             address = getattr(args, "address", None) or saved_address()

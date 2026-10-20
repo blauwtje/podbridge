@@ -7,7 +7,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 
 from podbridge import paths
-from podbridge.audio_io import CABLE_PLAYBACK, muted_default_output
+from podbridge.audio_io import CABLE_PLAYBACK, muted_default_output, mute_state_path
 
 CABLE_CAPTURE = "CABLE Output"
 MIC_WINDOW_S = 3.0
@@ -212,7 +212,7 @@ async def loopback_while_muted(ctx: Context) -> None:
     backend = ctx.backend_factory()
     ctx.stack.callback(backend.close)
     heard = False
-    with muted_default_output(backend, getattr(ctx.args, "output_source", None)):
+    with muted_default_output(backend, getattr(ctx.args, "output_source", None), mute_state_path(ctx.machine)):
         player = asyncio.create_task(asyncio.to_thread(backend.write_playback, tone(), backend.render_name()))
         for _ in range(LOOPBACK_CHUNKS):
             heard = heard or any(await asyncio.to_thread(backend.read_loopback, 960))
