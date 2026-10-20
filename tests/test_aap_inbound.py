@@ -24,10 +24,16 @@ def test_ear_state():
     assert parse(bytes.fromhex(P + "0600" + "00")) is None
 
 
+_INFO_HEADER = bytes.fromhex(P + "1D00" + "020000AABB")  # 4 prefix + 2 opcode + 5 header bytes
+
+
 def test_device_info_strings():
-    strings = b"My Pods\0AirPods Pro\0Apple\0SN123\0 8A357\0"
-    frame = bytes.fromhex(P + "1D00" + "01") + strings
-    assert parse(frame) == [DeviceInfo("My Pods", "AirPods Pro", "SN123", " 8A357")]
+    strings = b"Thomas AirPods\0A3064\0Apple Inc.\0SERIAL123\0 8A357 \08A357\0"
+    assert parse(_INFO_HEADER + strings) == [DeviceInfo("Thomas AirPods", "A3064", "SERIAL123", "8A357")]
+
+
+def test_device_info_too_few_fields_is_none():
+    assert parse(_INFO_HEADER + b"Thomas AirPods\0A3064\0Apple Inc.\0") is None
 
 
 def test_ca_level():
