@@ -131,12 +131,15 @@ async def output_pipeline(backend: AudioBackend, current_source: Callable[[], En
     A stats line every STATS_S shows where audio stops: reads, silent timeouts, peak level, fed source.
     """
     reads, peak, source, last = 0, 0, None, time.monotonic()
+    gain = None  # the gain of the previous chunk, where the next chunk's ramp starts
     while True:
         pcm = await asyncio.to_thread(backend.read_loopback, LOOPBACK_FRAMES)
         source = current_source()
         reads += 1
         if volume is not None:
-            pcm = apply_gain(pcm, volume.gain)
+            now_gain = volume.gain
+            pcm = apply_gain(pcm, now_gain, gain)
+            gain = now_gain
         samples = array("h")
         samples.frombytes(pcm[: len(pcm) // 2 * 2])
         if samples:

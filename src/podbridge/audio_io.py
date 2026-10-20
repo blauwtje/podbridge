@@ -9,7 +9,7 @@ import warnings
 from array import array
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Iterator, Protocol
+from typing import Callable, Iterator, Protocol
 
 from podbridge import winusb
 
@@ -46,6 +46,9 @@ class AudioBackend(Protocol):
 
     def get_volume(self) -> float:
         """Linear gain 0.0..1.0 the default render endpoint applies, as the speakers would play it."""
+
+    def watch_volume(self, wake: Callable[[], None]) -> Callable[[], None]:
+        """Call `wake` (without blocking) when the endpoint volume or mute changes; returns the unregister."""
 
     def render_name(self) -> str:
         """Name of the render device whose loopback is captured."""
@@ -87,13 +90,23 @@ class Volume:
         self.gain = gain
 
 
-def apply_gain(pcm: bytes, gain: float) -> bytes:
-    """16-bit PCM scaled by `gain` and clipped to int16; gain 1.0 returns the bytes as they are."""
-    if gain == 1.0:
-        return pcm
+def apply_gain(pcm: bytes, gain: float, previous: float | None = None) -> bytes:
+    """16-bit stereo PCM scaled by `gain` and clipped to int16; gain 1.0 returns the bytes as they are.
+
+    With a `previous` gain that differs, the factor moves linearly from it to `gain` across the chunk
+    (one factor per frame, both channels alike), so a change never makes a step.
+    """
+    if previous is None or previous == gain:
+        previous = gain
+        if gain == 1.0:
+            return pcm
     samples = array("h")
     samples.frombytes(pcm[: len(pcm) // 2 * 2])
-    return array("h", (_clip(v * gain) for v in samples)).tobytes()
+    if previous == gain:
+        return array("h", (_clip(v * gain) for v in samples)).tobytes()
+    frames = (len(samples) + 1) // 2
+    step = (gain - previous) / frames
+    return array("h", (_clip(v * (previous + step * (i // 2 + 1))) for i, v in enumerate(samples))).tobytes()
 
 
 VOLUME_POLL_S = 0.1
@@ -122,11 +135,25 @@ def muted_default_output(backend: AudioBackend, output_source: str | None = None
     restored = False
     lock = threading.Lock()
     stop = threading.Event()
+    wake = threading.Event()
+    unregister: Callable[[], None] | None = None
+
+    def release() -> None:
+        nonlocal unregister
+        with lock:
+            gone, unregister = unregister, None
+        if gone is not None:
+            try:
+                gone()
+            except Exception:
+                log.warning("volume notification unregister failed", exc_info=True)
 
     def restore() -> None:
         nonlocal restored
+        release()  # why: no notification may reach the watcher once the prior state is being put back
         with lock:
             stop.set()  # why: the watcher must not mute again after the prior state is back
+            wake.set()
             if not restored:
                 backend.set_mute(prior)
                 log.info("mute: restored to %s", prior)
@@ -137,6 +164,7 @@ def muted_default_output(backend: AudioBackend, output_source: str | None = None
     def watch() -> None:
         reported: set[type] = set()
         while True:
+            wake.clear()  # why: before the reads, so a change during them runs the loop again
             try:
                 gain, muted = backend.get_volume(), backend.get_mute()
                 if gain != volume.gain:
@@ -151,7 +179,8 @@ def muted_default_output(backend: AudioBackend, output_source: str | None = None
                 if type(exc) not in reported:
                     reported.add(type(exc))
                     log.warning("volume watcher failed", exc_info=True)
-            if stop.wait(VOLUME_POLL_S):
+            wake.wait(VOLUME_POLL_S)
+            if stop.is_set():
                 return
 
     atexit.register(restore)
@@ -160,11 +189,19 @@ def muted_default_output(backend: AudioBackend, output_source: str | None = None
     try:
         backend.set_mute(True)
         log.info("mute: set_mute(True) ran")
+        try:
+            registered = backend.watch_volume(wake.set)
+            with lock:
+                unregister = registered
+        except Exception:
+            log.warning("volume change notifications unavailable; polling every %.2f s", VOLUME_POLL_S, exc_info=True)
         watcher.start()
         yield volume
     finally:
         winusb.remove_close_handler(handler)
+        release()
         stop.set()
+        wake.set()
         if watcher.is_alive():
             watcher.join()
         restore()
@@ -178,6 +215,7 @@ class FakeBackend:
         self._loopback = loopback
         self.muted = muted
         self.volume = 1.0
+        self.wakers: list[Callable[[], None]] = []
         self.played: list[tuple[str, bytes]] = []
         self.closed = False
 
@@ -197,6 +235,18 @@ class FakeBackend:
 
     def get_volume(self) -> float:
         return self.volume
+
+    def watch_volume(self, wake: Callable[[], None]) -> Callable[[], None]:
+        self.wakers.append(wake)
+        return lambda: self.wakers.remove(wake)
+
+    @property
+    def watching(self) -> int:
+        return len(self.wakers)
+
+    def fire_volume_change(self) -> None:
+        for wake in list(self.wakers):
+            wake()
 
     def render_name(self) -> str:
         return "Default"
@@ -403,6 +453,61 @@ class PyAudioWPatchBackend:
             endpoint = self._volume()
             # why: the loopback is tapped before the endpoint volume, so podbridge applies the dB level it would
             return 10 ** (endpoint.GetMasterVolumeLevel() / 20) if endpoint.GetMasterVolumeLevelScalar() else 0.0
+
+    def watch_volume(self, wake: Callable[[], None]) -> Callable[[], None]:
+        """Register an IAudioEndpointVolumeCallback whose OnNotify only calls `wake`.
+
+        The callback lives in its own thread, in an MTA: a callback object in an STA needs a message pump to be
+        called. That thread registers, waits, then unregisters and uninitialises COM; the returned function joins it.
+        """
+        ready, done = threading.Event(), threading.Event()
+        failure: list[BaseException] = []
+
+        def hold() -> None:
+            comtypes = None
+            endpoint = callback = None
+            try:
+                comtypes = import_comtypes()
+                comtypes.CoInitializeEx(comtypes.COINIT_MULTITHREADED)
+                from pycaw.pycaw import AudioEndpointVolumeCallback
+
+                class Notify(AudioEndpointVolumeCallback):
+                    def OnNotify(self, pNotify):  # why: runs on a COM thread; only signal, never call back into COM
+                        try:
+                            wake()
+                        except Exception:
+                            pass
+
+                endpoint, callback = self._volume(), Notify()
+                endpoint.RegisterControlChangeNotify(callback)
+            except BaseException as exc:
+                failure.append(exc)
+                endpoint = None
+            finally:
+                ready.set()
+            try:
+                if endpoint is not None:
+                    done.wait()
+                    endpoint.UnregisterControlChangeNotify(callback)
+            except Exception:
+                log.warning("volume notification unregister failed", exc_info=True)
+            finally:
+                endpoint = callback = None
+                if comtypes is not None:
+                    comtypes.CoUninitialize()
+
+        thread = threading.Thread(target=hold, name="volume-callback", daemon=True)
+        thread.start()
+        ready.wait()
+        if failure:
+            thread.join()
+            raise failure[0]
+
+        def unregister() -> None:
+            done.set()
+            thread.join()
+
+        return unregister
 
     def close(self) -> None:
         for stream in [self._in, *self._out.values()]:
