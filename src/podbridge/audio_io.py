@@ -469,7 +469,7 @@ class PyAudioWPatchBackend:
             try:
                 comtypes = import_comtypes()
                 comtypes.CoInitializeEx(comtypes.COINIT_MULTITHREADED)
-                from pycaw.pycaw import AudioEndpointVolumeCallback
+                from pycaw.callbacks import AudioEndpointVolumeCallback
 
                 class Notify(AudioEndpointVolumeCallback):
                     def OnNotify(self, pNotify):  # why: runs on a COM thread; only signal, never call back into COM
