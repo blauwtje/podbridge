@@ -1,5 +1,6 @@
 """Self-update: find the newest GitHub build, verify it and start its setup."""
 import hashlib
+import http.client
 import json
 import os
 import re
@@ -62,7 +63,8 @@ def candidate(entry) -> tuple[str, Release] | None:
     tag = entry.get("tag_name")
     if not isinstance(tag, str) or not TAG.fullmatch(tag):
         return None
-    for asset in entry.get("assets") or []:
+    assets = entry.get("assets")
+    for asset in assets if isinstance(assets, list) else []:
         if isinstance(asset, dict) and asset.get("name") == ASSET:
             published = entry.get("published_at")
             url = asset.get("browser_download_url")
@@ -100,9 +102,9 @@ def install(release: Release) -> None:
     if not DIGEST.fullmatch(release.sha256):
         raise Skip("missing or malformed digest")
     data, final_url = download(release.url)
-    folder.mkdir(parents=True, exist_ok=True)
-    setup.write_bytes(data)
     try:
+        folder.mkdir(parents=True, exist_ok=True)
+        setup.write_bytes(data)
         verified(release, data, final_url)
         (folder / "attempted.txt").write_text(release.tag + "\n", encoding="utf-8")
     except BaseException:
@@ -130,7 +132,7 @@ def apply(args) -> bool:
             print(f"podbridge: update skipped ({release.tag} was already tried)")
             return False
         install(release)
-    except (Skip, OSError, ValueError) as error:
+    except (Skip, OSError, ValueError, http.client.HTTPException) as error:
         print(f"podbridge: update skipped ({error})")
         return False
     print(f"podbridge: installing {release.tag}; podbridge starts again when it is done")

@@ -1,4 +1,5 @@
 import hashlib
+import http.client
 import sys
 
 import pytest
@@ -106,7 +107,7 @@ def test_redirect_to_http_is_rejected(env):
     assert not (env["dir"] / "update" / "podbridge-setup.exe").exists()
 
 
-@pytest.mark.parametrize("error", [OSError("offline"), TimeoutError("slow"), ValueError("bad json")])
+@pytest.mark.parametrize("error", [OSError("offline"), TimeoutError("slow"), ValueError("bad json"), http.client.IncompleteRead(b"")])
 def test_api_error_fails_closed(env, error, capsys):
     env["releases"] = error
     assert update.apply(Args()) is False
@@ -161,3 +162,22 @@ def test_no_network_call_when_disabled(env, monkeypatch):
     (env["dir"] / "build.txt").write_text("build-4\n")
     assert update.apply(Args()) is False
     assert env["calls"] == []
+
+
+def test_non_list_assets_fails_closed(env, capsys):
+    env["releases"] = [{"tag_name": "build-5", "assets": 5}]
+    assert update.apply(Args()) is False
+    assert env["started"] == []
+    assert "update skipped" not in capsys.readouterr().out
+
+
+def test_failed_setup_write_leaves_no_file(env, monkeypatch):
+    def partial(self, data):
+        with open(self, "wb") as handle:
+            handle.write(data[:3])
+        raise OSError("disk full")
+
+    monkeypatch.setattr(type(env["dir"]), "write_bytes", partial)
+    assert update.apply(Args()) is False
+    assert env["started"] == []
+    assert not (env["dir"] / "update" / "podbridge-setup.exe").exists()
