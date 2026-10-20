@@ -33,6 +33,8 @@ Done. Talk and listen.
 4. Accept the one driver prompt (VB-CABLE).
 5. Restart Windows.
 
+Get `podbridge-setup.exe` from `github.com/blauwtje/podbridge/releases`. This is the only manual install. Later builds install themselves.
+
 ## First run and pairing
 
 1. Click "podbridge" in the Start Menu.
@@ -62,6 +64,8 @@ It prints the devices to pick in Discord:
 While it runs, podbridge mutes the Windows default output (the laptop speakers). It captures that output and sends it to the AirPods.
 
 To capture another device instead, use `--output-source <device>`. Then nothing is muted.
+
+When you open podbridge and GitHub has a newer build, podbridge downloads it, installs it silently and starts again. To skip this check, set `PODBRIDGE_NO_UPDATE`. If a silent setup fails, nothing is shown. Read the setup log in your TEMP folder (`%TEMP%`).
 
 Other commands:
 
