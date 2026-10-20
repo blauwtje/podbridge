@@ -11,7 +11,7 @@ from bumble.keys import JsonKeyStore
 from bumble.transport import open_transport
 
 from podbridge import paths, rtk_download
-from podbridge.a2dp_encoder import SAMPLE_RATE, SBC_SAMPLE_RATE, A2dpEncoder
+from podbridge.a2dp_encoder import SAMPLE_RATE, SBC_SAMPLE_RATE, AAC_BIT_RATE, A2dpEncoder, aac_bit_rate_for_mtu
 
 log = logging.getLogger("podbridge")
 APPLE_VENDOR_ID = 0x004C
@@ -21,6 +21,7 @@ DEVICE_ID_HANDLE = 0x10002
 ADTS_HEADER_SIZE = 7
 SBC_BITPOOL = 53
 PACKET_QUEUE = 64
+DEFAULT_L2CAP_MTU = 672
 STATS_S = 10.0
 RESTART_DELAY_S = 1.0
 RESTART_RETRY_S = 5.0
@@ -226,7 +227,10 @@ class EncodedPacketSource:
         self._queue: asyncio.Queue = asyncio.Queue(PACKET_QUEUE)
         self._sequence = 0
         self._samples = 0
-        self.fed = self.sent = 0
+        self.peer_mtu: int | None = None
+        self.fed = self.sent = self.oversize = 0
+        self._max_packet = 0
+        self._oversize_warned = False
         self._stats_at = time.monotonic()
 
     def feed(self, pcm: bytes) -> None:
@@ -239,7 +243,28 @@ class EncodedPacketSource:
         now = time.monotonic()
         if now - self._stats_at >= STATS_S:
             self._stats_at = now
-            log.info("A2DP packets: fed=%d sent=%d queued=%d", self.fed, self.sent, self._queue.qsize())
+            log.info(
+                "A2DP packets: fed=%d sent=%d queued=%d max_packet=%d oversize=%d",
+                self.fed, self.sent, self._queue.qsize(), self._max_packet, self.oversize,
+            )
+            self._max_packet = 0
+
+    def set_peer_mtu(self, mtu: int | None) -> None:
+        """Take the peer's media MTU (None: unknown) at a stream start.
+
+        AAC gets the bit rate that fits it, or the default rate when unknown; frames queued at the old rate are
+        cleared. An oversize packet is still sent, counted and warned about once per reading.
+        """
+        self.peer_mtu = mtu
+        self._oversize_warned = False
+        if self.encoder.codec != "aac":
+            return
+        bit_rate = AAC_BIT_RATE if mtu is None else aac_bit_rate_for_mtu(mtu, self.encoder.rate)
+        if bit_rate != self.encoder.bit_rate:
+            self.encoder = A2dpEncoder("aac", bit_rate)
+            while not self._queue.empty():
+                self._queue.get_nowait()
+        log.info("A2DP AAC bit rate %d bit/s, peer MTU %s", bit_rate, "unknown" if mtu is None else mtu)
 
     def _packet(self, frame: bytes) -> avdtp.MediaPacket:
         if self.encoder.codec == "aac":
@@ -251,8 +276,9 @@ class EncodedPacketSource:
             payload = SBC_ONE_FRAME_HEADER + frame
             samples, payload_type = 128, 96
         seconds = self._samples / self.encoder.rate
+        # A2DP and RFC 3016: the RTP timestamp counts samples at the codec's sample rate, not milliseconds
         packet = avdtp.MediaPacket(
-            2, 0, 0, 0, self._sequence, int(1000 * seconds), 0, [], payload_type, payload
+            2, 0, 0, 0, self._sequence, self._samples & 0xFFFFFFFF, 0, [], payload_type, payload
         )
         packet.timestamp_seconds = seconds
         self._sequence = (self._sequence + 1) & 0xFFFF
@@ -277,7 +303,16 @@ class _PacketStream:
         async def generate():
             while True:
                 packet = source._packet(await source._queue.get())
+                size = len(bytes(packet))
+                # why: Bumble never checks the peer MTU and a sink may drop an oversize SDU unseen; a wrong MTU reading
+                # must not silence the stream, so send it anyway, count it and warn once
+                if source.peer_mtu is not None and size > source.peer_mtu:
+                    source.oversize += 1
+                    if not source._oversize_warned:
+                        source._oversize_warned = True
+                        log.warning("A2DP packet of %d bytes exceeds the peer MTU %d; sending it anyway", size, source.peer_mtu)
                 source.sent += 1
+                source._max_packet = max(source._max_packet, size)
                 yield packet
 
         return generate()
@@ -422,6 +457,22 @@ class Host:
         self._restarter = handle_peer_commands(local, self.codec)
         log.info("A2DP configuring %s, source %s#%d", self.codec, type(self.source).__name__, id(self.source))
         stream = await protocol.create_stream(local, sink)
+        # why: Bumble opens the media channel inside stream.start(); open it first to read its MTU, which Bumble never
+        # checks, before the pump reads any packet
+        if getattr(stream, "state", None) == avdtp.State.CONFIGURED:
+            await stream.open()
+        mtu = getattr(getattr(stream, "rtp_channel", None), "peer_mtu", None)
+        if mtu is None:
+            log.info("A2DP media channel peer MTU unknown (%s)", self.codec)
+            self.source.set_peer_mtu(None)
+        else:
+            if mtu == l2cap.L2CAP_MIN_BR_EDR_MTU:
+                # why: Bumble leaves peer_mtu at its initial 48 when the peer sent no MTU option; L2CAP then means 672
+                log.info("A2DP media channel peer MTU=%d (%s): no MTU option received, assuming %d", mtu, self.codec, DEFAULT_L2CAP_MTU)
+                mtu = DEFAULT_L2CAP_MTU
+            else:
+                log.info("A2DP media channel peer MTU=%d (%s)", mtu, self.codec)
+            self.source.set_peer_mtu(mtu)
         await stream.start()
         log.info("A2DP stream started (%s)", self.codec)
         return stream
