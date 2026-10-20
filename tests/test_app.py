@@ -361,14 +361,123 @@ def test_a_reporter_that_raises_is_ignored(monkeypatch):
     safe.set_step("radio", "active")
 
 
+class LinkConn:
+    """An ACL that records `disconnect` calls and fires its disconnection handlers like Bumble does."""
+
+    def __init__(self):
+        self.handlers, self.disconnects = [], []
+
+    def on(self, event, handler):
+        if event == "disconnection":
+            self.handlers.append(handler)
+
+    def drop(self, reason=0x13):
+        for handler in self.handlers:
+            handler(reason)
+
+    async def disconnect(self, reason=0x13):
+        self.disconnects.append(reason)
+        self.drop(reason)
+
+
+class StreamHost:
+    codec = "sbc"
+
+    def __init__(self, error=None):
+        self.error = error
+
+    async def stream(self, connection):
+        if self.error is not None:
+            raise self.error
+
+
+def _serve_link(monkeypatch, run):
+    from podbridge import bond, settings
+
+    conn = LinkConn()
+
+    class Session:
+        def __init__(self, connection, queue, **options):
+            pass
+
+        async def run(self):
+            await run(conn)
+
+    async def connect(host, address, reporter):
+        return conn
+
+    monkeypatch.setattr(bond, "connect_bonded", connect)
+    monkeypatch.setattr(app, "AapSession", Session)
+    monkeypatch.setattr(settings, "load_ca_choice", lambda: None)
+    return conn
+
+
+async def _wait_forever(conn):
+    await asyncio.sleep(60)
+
+
+def test_serve_once_disconnects_the_acl_when_the_stream_fails(monkeypatch):
+    conn = _serve_link(monkeypatch, _wait_forever)
+    with pytest.raises(RuntimeError, match="no sbc sink"):
+        asyncio.run(app.serve_once(StreamHost(RuntimeError("no sbc sink")), "AA", app.Link(asyncio.Queue(), RecordingReporter())))
+    assert len(conn.disconnects) == 1
+
+
+def test_serve_once_disconnects_the_acl_when_the_aap_session_fails(monkeypatch):
+    async def fail(conn):
+        raise OSError("AAP channel refused")
+
+    conn = _serve_link(monkeypatch, fail)
+    with pytest.raises(OSError, match="AAP channel refused"):
+        asyncio.run(app.serve_once(StreamHost(), "AA", app.Link(asyncio.Queue(), RecordingReporter())))
+    assert len(conn.disconnects) == 1
+
+
+def test_serve_once_disconnects_the_acl_when_cancelled(monkeypatch):
+    conn = _serve_link(monkeypatch, _wait_forever)
+
+    async def go():
+        task = asyncio.create_task(app.serve_once(StreamHost(), "AA", app.Link(asyncio.Queue(), RecordingReporter())))
+        await asyncio.sleep(0.05)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    asyncio.run(go())
+    assert len(conn.disconnects) == 1
+
+
+def test_serve_once_does_not_disconnect_a_link_the_peer_dropped(monkeypatch):
+    async def dropped(conn):
+        conn.drop()
+        await asyncio.sleep(60)
+
+    conn = _serve_link(monkeypatch, dropped)
+    asyncio.run(app.serve_once(StreamHost(), "AA", app.Link(asyncio.Queue(), RecordingReporter())))
+    assert conn.disconnects == []
+
+
+def test_serve_once_keeps_the_session_error_when_the_disconnect_fails(monkeypatch):
+    async def fail(conn):
+        raise OSError("AAP channel refused")
+
+    conn = _serve_link(monkeypatch, fail)
+
+    async def broken(reason=0x13):
+        raise TimeoutError("controller gone")
+
+    conn.disconnect = broken
+    with pytest.raises(OSError, match="AAP channel refused"):
+        asyncio.run(app.serve_once(StreamHost(), "AA", app.Link(asyncio.Queue(), RecordingReporter())))
+
+
 def test_serve_once_gives_the_aap_session_settings_and_the_saved_ca_choice(monkeypatch):
     from podbridge import bond, settings
 
     seen = {}
 
-    class Conn:
-        def on(self, *a):
-            pass
+    class Conn(LinkConn):
+        pass
 
     class Fake:
         def __init__(self, connection, queue, **options):
@@ -380,16 +489,12 @@ def test_serve_once_gives_the_aap_session_settings_and_the_saved_ca_choice(monke
     async def connect(host, address, reporter):
         return Conn()
 
-    async def stream(host, connection):
-        pass
-
     monkeypatch.setattr(bond, "connect_bonded", connect)
-    monkeypatch.setattr(app, "start_stream", stream)
     monkeypatch.setattr(app, "AapSession", Fake)
     monkeypatch.setattr(settings, "load_ca_choice", lambda: 2)
     state = settings.SettingsState()
     reporter = RecordingReporter()
-    asyncio.run(app.serve_once("h", "AA", app.Link(asyncio.Queue(), reporter, state)))
+    asyncio.run(app.serve_once(StreamHost(), "AA", app.Link(asyncio.Queue(), reporter, state)))
     assert seen["ca_choice"] == 2 and seen["on_event"] == state.apply and seen["reporter"] is reporter
     assert ("connected", "active") in reporter.steps
 
@@ -397,9 +502,8 @@ def test_serve_once_gives_the_aap_session_settings_and_the_saved_ca_choice(monke
 def _serve_once_fixtures(monkeypatch, sent):
     from podbridge import bond
 
-    class Conn:
-        def on(self, *a):
-            pass
+    class Conn(LinkConn):
+        pass
 
     class Fake:
         def __init__(self, connection, queue, **options):
@@ -414,11 +518,7 @@ def _serve_once_fixtures(monkeypatch, sent):
     async def connect(host, address, reporter):
         return Conn()
 
-    async def stream(host, connection):
-        pass
-
     monkeypatch.setattr(bond, "connect_bonded", connect)
-    monkeypatch.setattr(app, "start_stream", stream)
     monkeypatch.setattr(app, "AapSession", Fake)
     monkeypatch.setattr(app, "TICK_S", 0.01)
 
@@ -445,7 +545,7 @@ def test_serve_once_publishes_the_airpods_state_and_reverts_unanswered_writes(mo
     state, reporter = settings.SettingsState(), PanelReporter()
 
     async def go():
-        task = asyncio.create_task(app.serve_once("h", "AA", app.Link(asyncio.Queue(), reporter, state)))
+        task = asyncio.create_task(app.serve_once(StreamHost(), "AA", app.Link(asyncio.Queue(), reporter, state)))
         await asyncio.sleep(0.05)
         state.apply(aap_inbound.Battery(4, 80, 1))
         state.write("listening_mode", 2, __import__("time").monotonic())
@@ -479,7 +579,7 @@ def test_serve_once_sends_user_writes_and_stores_the_ca_choice(monkeypatch):
             errors.append(exc)
 
     async def go():
-        task = asyncio.create_task(app.serve_once("h", "AA", app.Link(asyncio.Queue(), reporter)))
+        task = asyncio.create_task(app.serve_once(StreamHost(), "AA", app.Link(asyncio.Queue(), reporter)))
         thread = threading.Thread(target=user)
         thread.start()
         await asyncio.to_thread(thread.join)

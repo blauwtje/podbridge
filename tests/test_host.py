@@ -4,7 +4,7 @@ import os
 import struct
 
 import pytest
-from bumble import avdtp, core, sdp
+from bumble import a2dp, avdtp, core, sdp
 from bumble.keys import PairingKeys
 
 from podbridge import host, paths
@@ -104,3 +104,72 @@ def test_queue_drops_oldest_when_full():
 def test_codec_capabilities_serialise(codec):
     caps = host.codec_capabilities(codec)
     assert caps.service_capabilities_bytes
+
+
+class FakeProtocol:
+    """One AVDTP signaling channel with an AAC and an SBC sink; configuring a codec in `rejects` fails."""
+
+    def __init__(self, rejects):
+        self.rejects, self.discovers, self.started = rejects, 0, []
+
+    async def discover_remote_endpoints(self):
+        self.discovers += 1
+
+    def find_remote_sink_by_codec(self, media_type, codec_type):
+        return codec_type
+
+    def add_source(self, capabilities, pump):
+        return capabilities.media_codec_type, pump
+
+    async def create_stream(self, local, sink):
+        codec_type, pump = local
+        assert codec_type == sink
+        if codec_type in self.rejects:
+            raise avdtp.ProtocolError(0x29, "avdtp")  # UNSUPPORTED_CONFIGURATION
+        started = self.started
+
+        class Stream:
+            async def start(self):
+                started.append(codec_type)
+
+        return Stream()
+
+
+def _avdtp_peer(monkeypatch, rejects):
+    protocol, connects = FakeProtocol(rejects), []
+
+    async def find(connection):
+        return (1, 3)
+
+    async def connect(connection, version):
+        connects.append(connection)
+        return protocol
+
+    monkeypatch.setattr(avdtp, "find_avdtp_service_with_connection", find)
+    monkeypatch.setattr(avdtp.Protocol, "connect", connect)
+    return protocol, connects
+
+
+def test_stream_falls_back_to_sbc_on_the_same_avdtp_connection(monkeypatch):
+    protocol, connects = _avdtp_peer(monkeypatch, {a2dp.A2DP_MPEG_2_4_AAC_CODEC_TYPE})
+    h = host.Host("usb:0", codec="aac")
+    asyncio.run(h.stream("acl"))
+    assert connects == ["acl"] and protocol.discovers == 1
+    assert protocol.started == [a2dp.A2DP_SBC_CODEC_TYPE]
+    assert h.codec == "sbc" and h.source.encoder.codec == "sbc"
+
+
+def test_stream_keeps_aac_when_the_peer_accepts_it(monkeypatch):
+    protocol, connects = _avdtp_peer(monkeypatch, set())
+    h = host.Host("usb:0", codec="aac")
+    asyncio.run(h.stream("acl"))
+    assert len(connects) == 1 and protocol.started == [a2dp.A2DP_MPEG_2_4_AAC_CODEC_TYPE]
+    assert h.codec == "aac"
+
+
+def test_stream_raises_the_sbc_error_with_the_aac_error_as_its_context(monkeypatch):
+    _avdtp_peer(monkeypatch, {a2dp.A2DP_MPEG_2_4_AAC_CODEC_TYPE, a2dp.A2DP_SBC_CODEC_TYPE})
+    h = host.Host("usb:0", codec="aac")
+    with pytest.raises(avdtp.ProtocolError) as info:
+        asyncio.run(h.stream("acl"))
+    assert isinstance(info.value.__context__, avdtp.ProtocolError)
