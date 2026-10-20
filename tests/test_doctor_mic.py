@@ -56,3 +56,32 @@ def test_a_channel_that_never_opens_names_the_aap_channel(monkeypatch):
         run_stage(Connection())
     assert "AAP channel did not open" in str(failure.value)
     assert "reseat" not in str(failure.value)
+
+
+def test_mic_stage_records_the_48k_output_rate_the_decoder_produces_against_nominal(monkeypatch):
+    from array import array
+
+    from podbridge import mic_decoder
+
+    slow_start(monkeypatch)
+
+    class Decoder:
+        def decode(self, au):
+            return array("h", bytes(960))  # 480 samples per access unit
+
+    monkeypatch.setattr(mic_decoder, "MicDecoder", Decoder)
+
+    class Channel:
+        sink = None
+
+        def write(self, data):
+            if data == aap.START:
+                asyncio.get_running_loop().call_later(0.1, self.sink, mic_sdu(b"a", b"b", b"c"))
+
+    class Connection:
+        async def create_l2cap_channel(self, spec):
+            return Channel()
+
+    detail = run_stage(Connection())
+    assert "3.0 frames/s" in detail or "10.0 frames/s" in detail
+    assert "4800 out frames/s (-900000 ppm vs 48000)" in detail
