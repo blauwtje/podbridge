@@ -3,7 +3,7 @@ import importlib
 import sys
 import traceback
 
-from podbridge import __version__
+from podbridge import __version__, update
 
 COMMANDS = {
     "run": ("podbridge.app", "run"),
@@ -26,6 +26,7 @@ def build_parser() -> argparse.ArgumentParser:
             p.add_argument("--transport", help="Bluetooth USB device, usb:<vid>:<pid> in hex")
         if name == "run":
             p.add_argument("--output-source", help="capture this device instead of the default render endpoint")
+            p.add_argument("--no-update", action="store_true", help="do not look for a newer build")
             p.add_argument("--address", help="AirPods Bluetooth address instead of the one in device.json")
         if name == "restore":
             p.add_argument("--remove-cert", action="store_true", help="also delete the libwdi certificates")
@@ -34,6 +35,8 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
+    if args.command == "run" and update.apply(args):
+        return 0
     module, func = COMMANDS[args.command]
     try:
         result = getattr(importlib.import_module(module), func)(args)

@@ -56,3 +56,30 @@ def test_pause_shows_the_error_before_waiting(monkeypatch, capsys):
     monkeypatch.setattr("builtins.input", lambda prompt: seen.append(capsys.readouterr().err))
     assert __main__.main(["run", "--pause"]) == 1
     assert "bind failed" in seen[0]
+
+
+def _fake_run(monkeypatch, started):
+    calls = []
+    monkeypatch.setattr(cli.update, "apply", lambda args: started)
+    monkeypatch.setitem(sys.modules, "podbridge.app", type(sys)("podbridge.app"))
+    sys.modules["podbridge.app"].run = lambda args: calls.append(args) or 5
+    return calls
+
+
+def test_run_stops_without_pause_when_update_started(monkeypatch):
+    calls = _fake_run(monkeypatch, True)
+    monkeypatch.setattr("builtins.input", lambda *_: pytest.fail("paused"))
+    assert cli.main(["run", "--pause"]) == 0
+    assert calls == []
+
+
+def test_run_continues_when_no_update(monkeypatch):
+    calls = _fake_run(monkeypatch, False)
+    assert cli.main(["run"]) == 5
+    assert len(calls) == 1
+
+
+def test_no_update_flag_only_on_run():
+    assert cli.build_parser().parse_args(["run", "--no-update"]).no_update is True
+    with pytest.raises(SystemExit):
+        cli.build_parser().parse_args(["pair", "--no-update"])
