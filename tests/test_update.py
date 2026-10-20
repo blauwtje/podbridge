@@ -194,3 +194,31 @@ def test_source_run_against_an_install_never_updates(tmp_path, monkeypatch):
     assert update.own_build() == "build-4"
     assert update.apply(Args()) is False
     assert not (tmp_path / "update").exists()
+
+
+def test_unwritable_update_folder_is_found_before_the_download(env, capsys):
+    (env["dir"] / "update").write_text("not a folder")  # mkdir and every write below it fail, as in a read-only Program Files
+    assert update.apply(Args()) is False
+    assert env["calls"] == [update.API_URL]  # the release list, never the setup
+    assert env["started"] == []
+    assert "update skipped" in capsys.readouterr().out
+
+
+def test_unwritable_setup_file_is_found_before_the_download(env):
+    (env["dir"] / "update").mkdir()
+    (env["dir"] / "update" / "podbridge-setup.exe").mkdir()  # opening it for writing fails
+    assert update.apply(Args()) is False
+    assert env["calls"] == [update.API_URL]
+    assert env["started"] == []
+
+
+def test_older_numbered_release_is_not_installed_over_a_newer_build(env):
+    (env["dir"] / "build.txt").write_text("build-9\n")
+    assert update.apply(Args()) is False
+    assert env["calls"] == [update.API_URL]
+    assert env["started"] == []
+
+
+def test_non_numbered_tags_still_update(env):
+    (env["dir"] / "build.txt").write_text("local\n")
+    assert update.apply(Args()) is True
