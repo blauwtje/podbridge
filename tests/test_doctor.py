@@ -197,3 +197,30 @@ def test_report_receives_each_line_instead_of_the_console(capsys):
     assert ok is False
     assert lines == ["PASS one", "FAIL two: fix"]
     assert capsys.readouterr().out == ""
+
+
+def test_transport_stage_fails_within_its_timeout_and_names_the_next_step(monkeypatch, capsys):
+    from podbridge import host, radio
+
+    class Hanging:
+        closed = 0
+
+        def __init__(self, name):
+            pass
+
+        async def start(self):
+            await asyncio.sleep(10)
+
+        async def close(self):
+            Hanging.closed += 1
+
+    tried = []
+    monkeypatch.setattr(host, "Host", Hanging)
+    monkeypatch.setattr(radio, "recovery_steps", lambda machine, vid, pid: [("resetting it", lambda: tried.append((machine, vid, pid)))])
+    machine = object()
+    ctx = doctor.Context(machine=machine, vid=0x0BDA, pid=0x887B, radio_timeout=0.05)
+    assert run([doctor.bumble_transport], ctx) is False
+    assert tried == [(machine, 0x0BDA, 0x887B)]
+    fail = [line for line in capsys.readouterr().out.splitlines() if line.startswith("FAIL")]
+    assert len(fail) == 1 and "resetting it" in fail[0] and "shutdown /s /full" in fail[0]
+    assert Hanging.closed >= 1

@@ -52,6 +52,8 @@ class FakeWindows:
         self.delete_exit = 0
         self.state_at_wdi = None
         self.providers = dict(PROVIDERS)
+        self.restart_exit = 0
+        self.restart_driver = None  # the driver a /restart-device leaves bound; None keeps the current one
 
     def __call__(self, args):
         self.calls.append(list(args))
@@ -83,6 +85,10 @@ class FakeWindows:
                 self.driver = None
             if self.delete_exit:
                 return subprocess.CompletedProcess(["pnputil", *rest], self.delete_exit, "Driver package deleted successfully.\nSystem reboot is needed", "")
+        elif rest[0] == "/restart-device":
+            if self.restart_exit:
+                return subprocess.CompletedProcess(["pnputil", *rest], self.restart_exit, "", "Restart failed")
+            self.driver = self.restart_driver or self.driver
         elif rest == ["/scan-devices"] and self.driver is None and self.scan_rebinds:
             self.driver = self.original
         return subprocess.CompletedProcess(["pnputil", *rest], 0, out, "")
@@ -536,3 +542,47 @@ def test_reboot_exit_inside_bound_does_not_hide_the_firmware_error(setup, capsys
             raise RuntimeError("firmware")
     assert json.loads(state_path.read_text())["reboot_pending"] is True
     assert "restart windows" in capsys.readouterr().err.lower()
+
+
+def test_restart_device_restarts_the_bound_instance_and_keeps_winusb(setup):
+    fake, machine, state_path = setup
+    write_state(state_path)
+    fake.driver = LIBWDI_INF
+    winusb.restart_device(machine)
+    assert fake.ran("pnputil", "/restart-device", INSTANCE)
+    assert fake.driver == LIBWDI_INF and state_path.exists()
+
+
+def test_restart_device_without_a_bind_runs_nothing(setup):
+    fake, machine, state_path = setup
+    with pytest.raises(winusb.DriverError):
+        winusb.restart_device(machine)
+    write_state(state_path, libwdi_inf=None)
+    with pytest.raises(winusb.DriverError):
+        winusb.restart_device(machine)
+    assert not fake.ran("pnputil", "/restart-device")
+
+
+def test_restart_device_failure_is_a_driver_error_with_its_output(setup):
+    fake, machine, state_path = setup
+    write_state(state_path)
+    fake.driver, fake.restart_exit = LIBWDI_INF, 1
+    with pytest.raises(winusb.DriverError, match="Restart failed"):
+        winusb.restart_device(machine)
+
+
+@pytest.mark.parametrize("code", sorted(winusb.REBOOT_CODES))
+def test_restart_device_that_needs_a_reboot_is_not_success(setup, code):
+    fake, machine, state_path = setup
+    write_state(state_path)
+    fake.driver, fake.restart_exit = LIBWDI_INF, code
+    with pytest.raises(winusb.DriverError, match="restart"):
+        winusb.restart_device(machine)
+
+
+def test_restart_device_that_loses_the_winusb_bind_is_an_error(setup):
+    fake, machine, state_path = setup
+    write_state(state_path)
+    fake.driver, fake.restart_driver = LIBWDI_INF, REALTEK_INF
+    with pytest.raises(winusb.DriverError, match="WinUSB"):
+        winusb.restart_device(machine)

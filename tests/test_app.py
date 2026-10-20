@@ -614,3 +614,47 @@ def test_a_window_close_during_the_radio_start_still_closes_the_host(monkeypatch
     with pytest.raises(asyncio.CancelledError):
         asyncio.run(app.run_session(H(), FakeBackend(), app.Session("AA", state)))
     assert closed == [True]
+
+
+def test_run_session_passes_the_session_recovery_steps_to_start_radio(monkeypatch):
+    from podbridge import pairing, radio
+
+    seen, steps = [], (("resetting it", lambda: None),)
+
+    class H:
+        async def close(self):
+            pass
+
+    async def start(host, reporter, **kw):
+        seen.append(kw.get("recover"))
+
+    async def pair(host, reporter, *rest):
+        return None
+
+    monkeypatch.setattr(radio, "start_radio", start)
+    monkeypatch.setattr(pairing, "pair_with_hint", pair)
+    asyncio.run(app.run_session(H(), FakeBackend(), app.Session(None, object(), None, steps)))
+    assert seen == [steps]
+
+
+def test_run_gives_the_session_recovery_steps_for_its_device(preflight_usb_only, monkeypatch):
+    from contextlib import contextmanager
+
+    from podbridge import audio_io, radio, winusb
+
+    seen, machine = [], object()
+
+    @contextmanager
+    def fake_bound(vid, pid, machine=None):
+        yield machine
+
+    async def session(host, backend, s):
+        seen.append(s.recover)
+
+    monkeypatch.setattr(winusb, "bound", fake_bound)
+    monkeypatch.setattr(audio_io, "PyAudioWPatchBackend", lambda output_source=None: FakeBackend())
+    monkeypatch.setattr(radio, "recovery_steps", lambda m, vid, pid: ("steps", m, vid, pid))
+    monkeypatch.setattr(app, "run_session", session)
+    args = types.SimpleNamespace(transport="usb:0bda:887b", output_source="x", address="AA")
+    assert app.run(args, machine=machine) == 0
+    assert seen == [("steps", machine, 0x0BDA, 0x887B)]

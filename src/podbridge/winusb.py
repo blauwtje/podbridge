@@ -276,6 +276,18 @@ def restore_driver(machine: Machine) -> bool:
     return reboot
 
 
+def restart_device(machine: Machine) -> None:
+    """Restart the WinUSB-bound radio with `pnputil /restart-device` (Windows 10 2004+); it must stay on WinUSB."""
+    state = read_state(machine.state_path)
+    if state is None or state["libwdi_inf"] is None:
+        raise DriverError("no WinUSB bind recorded in driver-state.json; cannot restart the device")
+    instance_id, libwdi = state["instance_id"], state["libwdi_inf"]
+    if run_reporting_reboot(machine, ["pnputil", "/restart-device", instance_id])[1]:
+        raise DriverError(f"Windows must restart to finish restarting device {instance_id}")
+    if wait_for(machine, instance_id, lambda d: d is not None and d.lower() == libwdi.lower()) is None:
+        raise DriverError(f"device {instance_id} is no longer on WinUSB after its restart")
+
+
 def remove_cert(machine: Machine) -> None:
     """Delete the libwdi root certificate (`podbridge restore --remove-cert`, Decision 19)."""
     run_checked(machine, ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", REMOVE_CERT_SCRIPT])

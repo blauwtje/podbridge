@@ -40,3 +40,11 @@ def test_restore_pending_only_when_state_exists(tmp_path):
     p.write_text("{}")
     e = restore_pending(p)
     assert e.kind == "driver_restore_pending" and "podbridge restore" in e.next_step
+
+
+def test_describe_names_a_radio_error_and_its_own_next_step():
+    from podbridge.radio import RadioError
+
+    e = describe(RadioError("radio did not\nanswer", "try a full shutdown"))
+    assert e.kind == "failed" and e.message == "Radio problem: radio did not answer"
+    assert e.next_step == "try a full shutdown"
