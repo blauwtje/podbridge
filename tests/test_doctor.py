@@ -244,6 +244,38 @@ def test_transport_stage_fails_within_its_timeout_and_names_the_next_step(monkey
     assert Hanging.closed >= 1
 
 
+def test_transport_stage_records_which_usb_interface_claim_failed(monkeypatch, capsys):
+    import usb1
+
+    from podbridge import host
+
+    class Claiming:
+        def __init__(self, name):
+            pass
+
+        async def start(self):
+            usb1.USBDeviceHandle.claimInterface(None, 0)
+            usb1.USBDeviceHandle.claimInterface(None, 1)
+
+        async def close(self):
+            pass
+
+    def claim(handle, interface):
+        if interface == 1:
+            raise usb1.USBErrorNotSupported()
+
+    monkeypatch.setattr(host, "Host", Claiming)
+    monkeypatch.setattr(usb1.USBDeviceHandle, "claimInterface", claim)
+    original = usb1.USBDeviceHandle.claimInterface
+    ctx = doctor.Context(machine=object(), vid=0x0BDA, pid=0x887B, radio_timeout=0.05)
+    assert run([doctor.bumble_transport], ctx) is False
+    fail = [line for line in capsys.readouterr().out.splitlines() if line.startswith("FAIL")]
+    assert len(fail) == 1
+    assert "claimInterface(0) ok" in fail[0]
+    assert "claimInterface(1) USBErrorNotSupported LIBUSB_ERROR_NOT_SUPPORTED [-12]" in fail[0]
+    assert usb1.USBDeviceHandle.claimInterface is original
+
+
 def test_second_instance_is_not_told_to_run_restore(capsys):
     from podbridge import winusb
 
