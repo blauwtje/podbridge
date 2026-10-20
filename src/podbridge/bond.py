@@ -4,7 +4,12 @@ import json
 import os
 from pathlib import Path
 
-from bumble.hci import HCI_AUTHENTICATION_FAILURE_ERROR, HCI_PIN_OR_KEY_MISSING_ERROR, HCI_Error
+from bumble.hci import (
+    HCI_AUTHENTICATION_FAILURE_ERROR,
+    HCI_PIN_OR_KEY_MISSING_ERROR,
+    HCI_Error,
+)
+from bumble.keys import JsonKeyStore
 
 from podbridge import host
 from podbridge.events import Event
@@ -38,6 +43,40 @@ def drop_key(path, address) -> None:
     temp = path.with_name(path.name + ".tmp")
     temp.write_text(json.dumps(data, indent=4))
     os.replace(temp, path)
+
+
+def key_saved(path, address) -> bool:
+    """True when keys.json holds a BR/EDR link key for `address` where Bumble will read it.
+
+    The host opens the store as JsonKeyStore(None, path): the `__DEFAULT__` namespace, else
+    the only namespace. A file Bumble cannot load is renamed to keys.json.rejected, because
+    Bumble then fails every key update and pairing would never store a key.
+    """
+    path = Path(path)
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return False
+    except ValueError:
+        data = None
+    if isinstance(data, dict) and JsonKeyStore.DEFAULT_NAMESPACE in data:
+        peers = data[JsonKeyStore.DEFAULT_NAMESPACE]
+    elif isinstance(data, dict) and len(data) == 1:
+        peers = next(iter(data.values()))
+    elif isinstance(data, dict):
+        return False
+    else:
+        peers = None
+    if not isinstance(peers, dict):
+        os.replace(path, path.with_name(path.name + ".rejected"))
+        return False
+    wanted = str(address).upper()
+    return any(
+        (name.upper() == wanted or name.upper().startswith(wanted + "/"))
+        and isinstance(keys, dict)
+        and "link_key" in keys
+        for name, keys in peers.items()
+    )
 
 
 async def connect_bonded(host_, address, reporter):
