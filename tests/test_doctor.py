@@ -222,7 +222,7 @@ def test_transport_stage_fails_within_its_timeout_and_names_the_next_step(monkey
     assert run([doctor.bumble_transport], ctx) is False
     assert tried == [(machine, 0x0BDA, 0x887B)]
     fail = [line for line in capsys.readouterr().out.splitlines() if line.startswith("FAIL")]
-    assert len(fail) == 1 and "resetting it" in fail[0] and "shutdown /s /full" in fail[0]
+    assert len(fail) == 1 and "resetting it" in fail[0] and "shutdown /s /t 0" in fail[0] and "/full" not in fail[0]
     assert Hanging.closed >= 1
 
 

@@ -69,7 +69,8 @@ def test_no_answer_after_every_step_raises_naming_each_step_and_the_next_step():
     message = str(caught.value)
     assert "resetting A" in message and "restarting B" in message
     # a warm Windows restart did not revive this radio in the field, so the advice is a full shutdown
-    assert "shutdown /s /full" in caught.value.next_step
+    assert "shutdown /s /t 0" in caught.value.next_step
+    assert "/full" not in caught.value.next_step  # Windows shutdown has no /full option
     assert rec.events[-1].next_step == caught.value.next_step
     assert "reboot" not in message.lower() and "unplug" not in caught.value.next_step.lower()
 
