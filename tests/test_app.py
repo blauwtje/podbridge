@@ -493,7 +493,9 @@ def test_serve_once_gives_the_aap_session_settings_and_the_saved_ca_choice(monke
     reporter = RecordingReporter()
     asyncio.run(app.serve_once(StreamHost(), "AA", app.Link(asyncio.Queue(), reporter, state)))
     assert seen["ca_choice"] == 2 and seen["on_event"] == state.apply and seen["reporter"] is reporter
-    assert ("connected", "active") in reporter.steps
+    connected = [status for name, status in reporter.steps if name == "connected"]
+    assert ("connecting", "done") in reporter.steps
+    assert connected == ["done", "pending"]
 
 
 def _serve_once_fixtures(monkeypatch, sent):
