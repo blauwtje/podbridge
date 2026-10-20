@@ -16,7 +16,7 @@ jobs:
       RELEASE_TAG: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || format('build-{0}', github.run_number) }}
       LIBWDI_VERSION: v1.5.1
       VBCABLE_URL: https://download.vb-audio.com/Download_CABLE/VBCABLE_Driver_Pack45.zip
-      FIRMWARE_LICENCE_URL: https://git.kernel.org/pub/scm/linux/kernel/git/firmware/linux-firmware.git/plain/LICENCE.rtlwifi_firmware.txt
+      FIRMWARE_LICENCE_URL: https://git.kernel.org/pub/scm/linux/kernel/git/firmware/linux-firmware.git/plain/LICENCE.rtlwifi_firmware.txt?id=0061a2dde6c3ad74dd5dbfa0f645408bf846f9cd
       # Same commit and sha256 as FIRMWARE_URL and FIRMWARE_SHA256 in src/podbridge/app.py:
       # the last EPATCH v1 file, the only format the pinned Bumble reads.
       FIRMWARE_URL: https://git.kernel.org/pub/scm/linux/kernel/git/firmware/linux-firmware.git/plain/rtl_bt/rtl8852bu_fw.bin?id=0061a2dde6c3ad74dd5dbfa0f645408bf846f9cd
@@ -50,8 +50,9 @@ jobs:
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force dist/firmware | Out-Null
-          Invoke-WebRequest -Uri $env:FIRMWARE_URL -OutFile dist/firmware/rtl8852bu_fw.bin
-          Invoke-WebRequest -Uri $env:FIRMWARE_LICENCE_URL -OutFile dist/firmware/LICENCE.rtlwifi_firmware.txt
+          Invoke-WebRequest -Uri $env:FIRMWARE_URL -UserAgent podbridge-release -OutFile dist/firmware/rtl8852bu_fw.bin
+          Invoke-WebRequest -Uri $env:FIRMWARE_LICENCE_URL -UserAgent podbridge-release -OutFile dist/firmware/LICENCE.rtlwifi_firmware.txt
+          if ((Get-Content dist/firmware/LICENCE.rtlwifi_firmware.txt -Raw).TrimStart().StartsWith('<')) { throw "LICENCE.rtlwifi_firmware.txt is an HTML page, not the licence" }
           if (-not (Test-Path "dist/firmware/rtl8852bu_fw.bin")) { throw "missing firmware file rtl8852bu_fw.bin" }
           $actual = (Get-FileHash dist/firmware/rtl8852bu_fw.bin -Algorithm SHA256).Hash.ToLower()
           if ($actual -ne $env:FIRMWARE_SHA256) { throw "rtl8852bu_fw.bin sha256 $actual is not the pinned $env:FIRMWARE_SHA256" }
