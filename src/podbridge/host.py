@@ -24,6 +24,7 @@ SBC_BITPOOL = 53
 PACKET_QUEUE_S = 0.2
 DEFAULT_L2CAP_MTU = 672
 STATS_S = 10.0
+MAX_DROPPED_IN_A_ROW = 8  # then oversize packets are sent again, in case the peer MTU reading is wrong
 RESTART_DELAY_S = 1.0
 RESTART_RETRY_S = 5.0
 RESTART_ATTEMPTS = 3
@@ -239,7 +240,10 @@ class EncodedPacketSource:
         self._sequence = 0
         self._samples = 0
         self.peer_mtu: int | None = None
-        self.fed = self.sent = self.oversize = 0
+        self.fed = self.sent = self.oversize = self.dropped = 0
+        self._drop_streak = 0
+        self._send_anyway = False
+        self._anyway_warned = False
         self._max_packet = 0
         self._oversize_warned = False
         self._stats_at = time.monotonic()
@@ -255,8 +259,8 @@ class EncodedPacketSource:
         if now - self._stats_at >= STATS_S:
             self._stats_at = now
             log.info(
-                "A2DP packets: fed=%d sent=%d queued=%d max_packet=%d oversize=%d",
-                self.fed, self.sent, self._queue.qsize(), self._max_packet, self.oversize,
+                "A2DP packets: fed=%d sent=%d queued=%d max_packet=%d oversize=%d dropped=%d",
+                self.fed, self.sent, self._queue.qsize(), self._max_packet, self.oversize, self.dropped,
             )
             self._max_packet = 0
 
@@ -264,10 +268,11 @@ class EncodedPacketSource:
         """Take the peer's media MTU (None: unknown) at a stream start.
 
         AAC gets the bit rate that fits it, or the default rate when unknown; frames queued at the old rate are
-        cleared. An oversize packet is still sent, counted and warned about once per reading.
+        cleared. An oversize packet is dropped, counted and warned about once per reading (see _PacketStream).
         """
         self.peer_mtu = mtu
-        self._oversize_warned = False
+        self._oversize_warned = self._anyway_warned = self._send_anyway = False
+        self._drop_streak = 0
         if self.encoder.codec != "aac":
             return
         bit_rate = AAC_BIT_RATE if mtu is None else aac_bit_rate_for_mtu(mtu, self.encoder.rate)
@@ -316,15 +321,35 @@ class _PacketStream:
             while not source._queue.empty():
                 source._queue.get_nowait()
             while True:
-                packet = source._packet(await source._queue.get())
+                frame = await source._queue.get()
+                sequence = source._sequence
+                packet = source._packet(frame)
                 size = len(bytes(packet))
-                # why: Bumble never checks the peer MTU and a sink may drop an oversize SDU unseen; a wrong MTU reading
-                # must not silence the stream, so send it anyway, count it and warn once
                 if source.peer_mtu is not None and size > source.peer_mtu:
                     source.oversize += 1
-                    if not source._oversize_warned:
-                        source._oversize_warned = True
-                        log.warning("A2DP packet of %d bytes exceeds the peer MTU %d; sending it anyway", size, source.peer_mtu)
+                    # why: an SDU over the peer MTU stalls the AirPods for good (no sound though packets flow), and AAC
+                    # peak frames outgrow any bit rate, so drop it: the sink conceals one frame
+                    if source._send_anyway:
+                        if not source._anyway_warned:
+                            source._anyway_warned = True
+                            log.warning(
+                                "A2DP: every packet exceeds the peer MTU %d; sending them anyway", source.peer_mtu
+                            )
+                    else:
+                        source.dropped += 1
+                        source._drop_streak += 1
+                        # the RTP timestamp stays advanced, the sequence number must not skip
+                        source._sequence = sequence
+                        if not source._oversize_warned:
+                            source._oversize_warned = True
+                            log.warning("A2DP packet of %d bytes exceeds the peer MTU %d; dropped", size, source.peer_mtu)
+                        if source._drop_streak >= MAX_DROPPED_IN_A_ROW:
+                            # why: a wrong MTU reading must not silence the stream for good
+                            source._send_anyway = True
+                        continue
+                else:
+                    source._drop_streak = 0
+                    source._send_anyway = False
                 source.sent += 1
                 source._max_packet = max(source._max_packet, size)
                 yield packet
