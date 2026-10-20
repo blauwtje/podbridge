@@ -123,8 +123,8 @@ def test_watcher_survives_errors_and_logs_each_kind_once(caplog):
         with muted_default_output(b) as volume:
             b.volume = 0.5
             assert until(lambda: volume.gain == 0.5)
-    assert sum("endpoint busy" in r.getMessage() or (r.exc_info and "endpoint busy" in str(r.exc_info[1]))
-               for r in caplog.records) == 1
+    failures = [r for r in caplog.records if r.exc_info and "endpoint busy" in str(r.exc_info[1])]
+    assert len(failures) == 1
 
 
 def test_output_source_does_no_watching_and_the_gain_stays_full():

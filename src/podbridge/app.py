@@ -13,7 +13,7 @@ from typing import Callable, NamedTuple
 from podbridge import crash, paths
 from podbridge.aap_session import AapSession
 from podbridge.events import ConsoleReporter, Event
-from podbridge.audio_io import CABLE_PLAYBACK, AudioBackend, muted_default_output, mute_state_path
+from podbridge.audio_io import CABLE_PLAYBACK, AudioBackend, Volume, apply_gain, muted_default_output, mute_state_path
 from podbridge.host import EncodedPacketSource, Host
 from podbridge.mic_decoder import MicDecoder
 
@@ -103,6 +103,7 @@ class Session(NamedTuple):
     reporter: object = None
     make_backend: Callable | None = None
     recover: tuple = ()  # (what, step) pairs start_radio runs when the radio does not answer
+    volume: Volume | None = None  # the endpoint gain the output pipeline applies; None is full volume
 
 
 def step(reporter, name, status) -> None:
@@ -121,10 +122,12 @@ def mono_to_stereo(samples: array) -> bytes:
     return stereo.tobytes()
 
 
-async def output_pipeline(backend: AudioBackend, current_source: Callable[[], EncodedPacketSource]) -> None:
+async def output_pipeline(backend: AudioBackend, current_source: Callable[[], EncodedPacketSource],
+                          volume: Volume | None = None) -> None:
     """Loopback capture to the encoder to the A2DP packet queue, until cancelled.
 
     `current_source` is asked per frame: the SBC fallback swaps `host.source` mid-session.
+    `volume.gain` scales each chunk, since the capture ignores the Windows volume.
     A stats line every STATS_S shows where audio stops: reads, silent timeouts, peak level, fed source.
     """
     reads, peak, source, last = 0, 0, None, time.monotonic()
@@ -132,6 +135,8 @@ async def output_pipeline(backend: AudioBackend, current_source: Callable[[], En
         pcm = await asyncio.to_thread(backend.read_loopback, LOOPBACK_FRAMES)
         source = current_source()
         reads += 1
+        if volume is not None:
+            pcm = apply_gain(pcm, volume.gain)
         samples = array("h")
         samples.frombytes(pcm[: len(pcm) // 2 * 2])
         if samples:
@@ -338,7 +343,7 @@ async def run_session(host: Host, backend: AudioBackend, session: Session) -> No
                 current.append(make_backend())
 
         pipelines = [
-            supervise.Pipeline("output", lambda: output_pipeline(current[-1], lambda: host.source), reopen),
+            supervise.Pipeline("output", lambda: output_pipeline(current[-1], lambda: host.source, session.volume), reopen),
             supervise.Pipeline("mic", lambda: mic_pipeline(queue, MicDecoder(), current[-1]), reopen),
         ]
         tasks.extend(asyncio.create_task(supervise.supervise(p, reporter)) for p in pipelines)
@@ -469,13 +474,13 @@ def _run(args, machine=None, reporter=None) -> int:
         step(reporter, "driver", "active")
         with winusb.bound(vid, pid, machine), muted_default_output(
             backend, args.output_source, mute_state_path(machine)
-        ):
+        ) as volume:
             step(reporter, "driver", "done")
             host = Host(f"usb:{vid:04X}:{pid:04X}")
             address = getattr(args, "address", None) or saved_address()
             make_backend = lambda: PyAudioWPatchBackend(output_source=args.output_source)
             recover = radio.recovery_steps(machine, vid, pid)
-            asyncio.run(run_session(host, backend, Session(address, reporter, make_backend, recover)))
+            asyncio.run(run_session(host, backend, Session(address, reporter, make_backend, recover, volume)))
             session_done = True
     except (KeyboardInterrupt, asyncio.CancelledError) as exc:
         # Ctrl+C or the window closing: a normal end, unless the driver could not be given back.

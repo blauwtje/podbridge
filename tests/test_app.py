@@ -685,6 +685,7 @@ def test_a_failed_mute_restore_is_not_reported_as_a_driver_restore_failure(prefl
             self.mutes += 1
             if self.mutes == 2:
                 raise OSError("audio endpoint gone")
+            super().set_mute(value)  # why: the volume watcher re-mutes an endpoint that reads unmuted
 
     @contextmanager
     def bound(vid, pid, machine=None):

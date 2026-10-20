@@ -44,6 +44,9 @@ class AudioBackend(Protocol):
     def set_mute(self, muted: bool) -> None:
         """Set the mute state of the default render endpoint."""
 
+    def get_volume(self) -> float:
+        """Linear gain 0.0..1.0 the default render endpoint applies, as the speakers would play it."""
+
     def render_name(self) -> str:
         """Name of the render device whose loopback is captured."""
 
@@ -77,16 +80,39 @@ def save_mute(path: Path | None, muted: bool) -> None:
     os.replace(tmp, path)
 
 
+class Volume:
+    """The endpoint gain the output pipeline applies; written by the watcher, read per chunk."""
+
+    def __init__(self, gain: float = 1.0) -> None:
+        self.gain = gain
+
+
+def apply_gain(pcm: bytes, gain: float) -> bytes:
+    """16-bit PCM scaled by `gain` and clipped to int16; gain 1.0 returns the bytes as they are."""
+    if gain == 1.0:
+        return pcm
+    samples = array("h")
+    samples.frombytes(pcm[: len(pcm) // 2 * 2])
+    return array("h", (_clip(v * gain) for v in samples)).tobytes()
+
+
+VOLUME_POLL_S = 0.1
+
+
 @contextmanager
 def muted_default_output(backend: AudioBackend, output_source: str | None = None,
-                         state_path: Path | None = None) -> Iterator[None]:
+                         state_path: Path | None = None) -> Iterator[Volume]:
     """Mute the default render endpoint (Decision 15); restore the prior state on exit.
 
-    Does nothing when `output_source` is given. Restores in finally, atexit and on console close.
+    Yields the endpoint gain. Windows taps the loopback before volume and mute, so the capture ignores the
+    slider; a watcher keeps the endpoint muted (moving the slider unmutes it) and tracks its volume.
+    Does nothing, and yields a fixed gain of 1.0, when `output_source` is given.
+    Restores in finally, atexit and on console close.
     The prior state is also saved to `state_path`, so a run after a hard kill restores it, not the kill's mute.
     """
+    volume = Volume()
     if output_source:
-        yield
+        yield volume
         return
     saved = saved_mute(state_path)
     prior = saved if saved is not None else backend.get_mute()
@@ -95,10 +121,12 @@ def muted_default_output(backend: AudioBackend, output_source: str | None = None
         save_mute(state_path, prior)
     restored = False
     lock = threading.Lock()
+    stop = threading.Event()
 
     def restore() -> None:
         nonlocal restored
         with lock:
+            stop.set()  # why: the watcher must not mute again after the prior state is back
             if not restored:
                 backend.set_mute(prior)
                 log.info("mute: restored to %s", prior)
@@ -106,14 +134,39 @@ def muted_default_output(backend: AudioBackend, output_source: str | None = None
                 if state_path is not None:
                     state_path.unlink(missing_ok=True)
 
+    def watch() -> None:
+        reported: set[type] = set()
+        while True:
+            try:
+                gain, muted = backend.get_volume(), backend.get_mute()
+                if gain != volume.gain:
+                    volume.gain = gain
+                    log.info("volume: gain %.3f", gain)
+                if muted is False:
+                    with lock:
+                        if not stop.is_set():
+                            backend.set_mute(True)
+                            log.info("mute: endpoint unmuted (volume %.2f); muted again", gain)
+            except Exception as exc:
+                if type(exc) not in reported:
+                    reported.add(type(exc))
+                    log.warning("volume watcher failed", exc_info=True)
+            if stop.wait(VOLUME_POLL_S):
+                return
+
     atexit.register(restore)
     handler = winusb.install_close_handler(restore)
+    watcher = threading.Thread(target=watch, name="volume-watcher", daemon=True)
     try:
         backend.set_mute(True)
         log.info("mute: set_mute(True) ran")
-        yield
+        watcher.start()
+        yield volume
     finally:
         winusb.remove_close_handler(handler)
+        stop.set()
+        if watcher.is_alive():
+            watcher.join()
         restore()
         atexit.unregister(restore)
 
@@ -124,6 +177,7 @@ class FakeBackend:
     def __init__(self, loopback: bytes = b"", muted: bool = False) -> None:
         self._loopback = loopback
         self.muted = muted
+        self.volume = 1.0
         self.played: list[tuple[str, bytes]] = []
         self.closed = False
 
@@ -140,6 +194,9 @@ class FakeBackend:
 
     def set_mute(self, muted: bool) -> None:
         self.muted = muted
+
+    def get_volume(self) -> float:
+        return self.volume
 
     def render_name(self) -> str:
         return "Default"
@@ -340,6 +397,12 @@ class PyAudioWPatchBackend:
     def set_mute(self, muted: bool) -> None:
         with com_initialised():
             self._volume().SetMute(int(muted), None)
+
+    def get_volume(self) -> float:
+        with com_initialised():
+            endpoint = self._volume()
+            # why: the loopback is tapped before the endpoint volume, so podbridge applies the dB level it would
+            return 10 ** (endpoint.GetMasterVolumeLevel() / 20) if endpoint.GetMasterVolumeLevelScalar() else 0.0
 
     def close(self) -> None:
         for stream in [self._in, *self._out.values()]:
