@@ -20,7 +20,8 @@ A2DP_SOURCE_HANDLE = 0x10001
 DEVICE_ID_HANDLE = 0x10002
 ADTS_HEADER_SIZE = 7
 SBC_BITPOOL = 53
-PACKET_QUEUE = 64
+# Seconds of audio the packet queue holds; Bumble paces from the first packet, so all of it can become delay
+PACKET_QUEUE_S = 0.2
 DEFAULT_L2CAP_MTU = 672
 STATS_S = 10.0
 RESTART_DELAY_S = 1.0
@@ -219,12 +220,22 @@ def handle_peer_commands(local, codec: str) -> StreamRestarter:
     return restarter
 
 
+def frame_samples(codec: str) -> int:
+    """Samples in one RTP packet: one AAC frame or one SBC frame."""
+    return 1024 if codec == "aac" else 128
+
+
+def packet_queue_size(encoder: A2dpEncoder) -> int:
+    """Packets that hold PACKET_QUEUE_S seconds of the encoder's audio."""
+    return max(1, int(PACKET_QUEUE_S * encoder.rate / frame_samples(encoder.codec)))
+
+
 class EncodedPacketSource:
     """`feed(pcm)` encodes and queues RTP packets; `packets` is the generator Bumble's pump reads."""
 
     def __init__(self, encoder: A2dpEncoder):
         self.encoder = encoder
-        self._queue: asyncio.Queue = asyncio.Queue(PACKET_QUEUE)
+        self._queue: asyncio.Queue = asyncio.Queue(packet_queue_size(encoder))
         self._sequence = 0
         self._samples = 0
         self.peer_mtu: int | None = None
@@ -271,10 +282,9 @@ class EncodedPacketSource:
             payload = bytes(
                 a2dp.AacAudioRtpPacket.for_simple_aac(self.encoder.rate, 2, frame[ADTS_HEADER_SIZE:])
             )
-            samples, payload_type = 1024, 96
         else:
             payload = SBC_ONE_FRAME_HEADER + frame
-            samples, payload_type = 128, 96
+        samples, payload_type = frame_samples(self.encoder.codec), 96
         seconds = self._samples / self.encoder.rate
         # A2DP and RFC 3016: the RTP timestamp counts samples at the codec's sample rate, not milliseconds
         packet = avdtp.MediaPacket(
@@ -301,6 +311,10 @@ class _PacketStream:
         source = self._source
 
         async def generate():
+            # why: Bumble paces each packet from the first one sent, so packets queued before the start would stay
+            # as delay for the whole stream
+            while not source._queue.empty():
+                source._queue.get_nowait()
             while True:
                 packet = source._packet(await source._queue.get())
                 size = len(bytes(packet))

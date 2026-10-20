@@ -9,8 +9,8 @@ MIN_AAC_BIT_RATE = 64_000
 AAC_FRAME_SAMPLES = 1024
 # Bytes around one AAC frame in an RTP packet: RTP header (12) plus LATM length and StreamMuxConfig (about 16 measured).
 AAC_PACKET_OVERHEAD = 32
-# Largest frame over its mean size seen from the VBR encoder (1.21 to 1.28 at 128 to 256 kbps), with margin.
-AAC_VBR_PEAK = 1.3
+# Largest frame over its mean size seen from the VBR encoder: 1.21 to 1.28 on test noise, 1.79 in a real run, with margin.
+AAC_VBR_PEAK = 1.9
 _ADTS_RATE_INDEX = {96000: 0, 88200: 1, 64000: 2, 48000: 3, 44100: 4, 32000: 5}
 
 
