@@ -2,8 +2,9 @@ import sys
 import threading
 import time
 import types
+from pathlib import Path
 
-from podbridge import window
+from podbridge import paths, window
 
 
 class FakeState:
@@ -78,6 +79,45 @@ def test_web_dir_prefers_bundle(monkeypatch, tmp_path):
 def test_web_dir_source_tree(monkeypatch):
     monkeypatch.delattr(sys, "_MEIPASS", raising=False)
     assert window.web_dir().parts[-3:] == ("src", "podbridge", "web")
+
+
+def source_tree(monkeypatch, tmp_path, built: bool) -> Path:
+    """Point window.py at a fake source package whose UI is built or not."""
+    package = tmp_path / "src" / "podbridge"
+    package.mkdir(parents=True)
+    if built:
+        (package / "web").mkdir()
+        (package / "web" / "index.html").write_text("source")
+    monkeypatch.setattr(window, "__file__", str(package / "window.py"))
+    monkeypatch.delattr(sys, "_MEIPASS", raising=False)
+    monkeypatch.delattr(sys, "frozen", raising=False)
+    return package / "web"
+
+
+def installed_ui(monkeypatch, tmp_path) -> Path:
+    web = tmp_path / "install" / paths.BUNDLE_CONTENTS / "podbridge" / "web"
+    web.mkdir(parents=True)
+    (web / "index.html").write_text("installed")
+    monkeypatch.setenv(paths.INSTALL_DIR_ENV, str(tmp_path / "install"))
+    return web
+
+
+def test_source_run_without_a_built_ui_uses_the_installed_one(monkeypatch, tmp_path):
+    source_tree(monkeypatch, tmp_path, built=False)
+    installed = installed_ui(monkeypatch, tmp_path)
+    assert window.web_dir() == installed
+
+
+def test_source_run_prefers_its_own_built_ui(monkeypatch, tmp_path):
+    source = source_tree(monkeypatch, tmp_path, built=True)
+    installed_ui(monkeypatch, tmp_path)
+    assert window.web_dir() == source
+
+
+def test_source_run_without_any_built_ui_names_the_source_folder(monkeypatch, tmp_path):
+    source = source_tree(monkeypatch, tmp_path, built=False)
+    monkeypatch.setenv(paths.INSTALL_DIR_ENV, str(tmp_path / "install"))
+    assert window.web_dir() == source
 
 
 def test_open_exposes_the_js_api(monkeypatch, tmp_path):

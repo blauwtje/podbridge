@@ -168,3 +168,34 @@ def test_firmware_step_fetches_only_the_fw_file():
     text = WORKFLOW.read_text(encoding="utf-8")
     assert "bumble-rtk-fw-download" not in text
     assert "rtl8852bu_config.bin" not in text
+
+
+DEV = ROOT / "scripts" / "dev.ps1"
+
+
+def test_build_keeps_pyinstallers_default_contents_folder():
+    """Source runs find the installed UI under paths.BUNDLE_CONTENTS; a custom folder would hide it."""
+    from podbridge import paths
+
+    assert "--contents-directory" not in BUILD.read_text(encoding="utf-8")
+    assert paths.BUNDLE_CONTENTS == "_internal"
+
+
+def test_dev_script_finds_the_install_by_the_installer_app_id():
+    app_id = re.search(r"AppId=\{(\{[0-9A-F-]+\})", ISS.read_text(encoding="utf-8")).group(1)
+    text = DEV.read_text(encoding="utf-8")
+    assert f'$AppId = "{app_id}"' in text
+    assert r"CurrentVersion\Uninstall\${AppId}_is1" in text and "InstallLocation" in text
+
+
+def test_dev_script_pulls_syncs_and_runs_source_elevated_against_the_install():
+    from podbridge import paths
+
+    text = DEV.read_text(encoding="utf-8")
+    assert "remote -v" in text and "merge --ff-only" in text
+    code = text.split("#>", 1)[1]
+    assert code.index("merge --ff-only") < code.index("uv sync") < code.index("-m podbridge")
+    assert f"$env:{paths.INSTALL_DIR_ENV} = " in text
+    assert "-Verb RunAs" in text
+    for rebuild in ("pyinstaller", "build_exe", "npm", "ISCC"):
+        assert rebuild not in text, rebuild

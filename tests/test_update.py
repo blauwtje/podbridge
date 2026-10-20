@@ -181,3 +181,16 @@ def test_failed_setup_write_leaves_no_file(env, monkeypatch):
     assert update.apply(Args()) is False
     assert env["started"] == []
     assert not (env["dir"] / "update" / "podbridge-setup.exe").exists()
+
+
+def test_source_run_against_an_install_never_updates(tmp_path, monkeypatch):
+    """dev.ps1 points a source run at the install, whose build.txt names a build: still no check."""
+    (tmp_path / "build.txt").write_text("build-4\n")
+    monkeypatch.delattr(sys, "frozen", raising=False)
+    monkeypatch.delenv("PODBRIDGE_NO_UPDATE", raising=False)
+    monkeypatch.setenv(paths.INSTALL_DIR_ENV, str(tmp_path))
+    monkeypatch.setattr(update, "get_json", lambda url: pytest.fail("checked GitHub"))
+    monkeypatch.setattr(update, "start", lambda command: pytest.fail("started setup"))
+    assert update.own_build() == "build-4"
+    assert update.apply(Args()) is False
+    assert not (tmp_path / "update").exists()
