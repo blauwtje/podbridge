@@ -41,7 +41,7 @@ def test_mic_frames_that_follow_a_late_start_are_counted(monkeypatch):
             await asyncio.sleep(0.05)
             return Channel()
 
-    assert run_stage(Connection()).endswith("frames/s")
+    assert "frames/s" in run_stage(Connection())
 
 
 def test_a_channel_that_never_opens_names_the_aap_channel(monkeypatch):
@@ -83,5 +83,5 @@ def test_mic_stage_records_the_48k_output_rate_the_decoder_produces_against_nomi
             return Channel()
 
     detail = run_stage(Connection())
-    assert "3.0 frames/s" in detail or "10.0 frames/s" in detail
+    assert "10.0 frames/s" in detail
     assert "4800 out frames/s (-900000 ppm vs 48000)" in detail

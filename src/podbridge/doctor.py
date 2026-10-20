@@ -199,7 +199,21 @@ async def mic_frames(ctx: Context) -> str:
     frames = ctx.queue.qsize()
     if not frames:
         raise StageFailed("no mic frames; reseat the AirPods in your ears and retry")
-    return f"{frames / MIC_WINDOW_S:.1f} frames/s"
+    return f"{frames / MIC_WINDOW_S:.1f} frames/s, {mic_output_rate(ctx.queue)}"
+
+
+def mic_output_rate(queue: asyncio.Queue) -> str:
+    """Decode the queued access units as the mic pipeline does and give the 48 kHz output rate against nominal.
+
+    Nothing is written to CABLE here, so the consumed side is the nominal rate it plays at."""
+    from podbridge import mic_decoder
+
+    decoder, produced = mic_decoder.MicDecoder(), 0
+    while not queue.empty():
+        produced += len(decoder.decode(queue.get_nowait()))
+    rate = produced / MIC_WINDOW_S
+    ppm = (rate / mic_decoder.OUT_RATE - 1) * 1e6
+    return f"{rate:.0f} out frames/s ({ppm:+.0f} ppm vs {mic_decoder.OUT_RATE})"
 
 
 def property_values(endpoint) -> list:
