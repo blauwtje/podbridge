@@ -181,6 +181,7 @@ async def serve_once(host: Host, address: str, link: Link) -> None:
     try:
         await serve_connection(host, connection, disconnected, link)
     finally:
+        step(link.reporter, "connected", "pending")
         # why: a link left up makes the next connect to this address fail with ACL_CONNECTION_ALREADY_EXISTS
         if not disconnected.done():
             await drop_link(connection)
@@ -200,7 +201,7 @@ async def serve_connection(host: Host, connection, disconnected: asyncio.Future,
 
     await host.stream(connection)
     step(link.reporter, "connecting", "done")
-    step(link.reporter, "connected", "active")
+    step(link.reporter, "connected", "done")
     state = link.settings or settings.SettingsState()
     session = AapSession(
         connection, link.queue, on_event=state.apply, ca_choice=settings.load_ca_choice(), reporter=link.reporter
