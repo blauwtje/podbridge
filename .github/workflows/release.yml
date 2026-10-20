@@ -21,6 +21,7 @@ jobs:
       # the last EPATCH v1 file, the only format the pinned Bumble reads.
       FIRMWARE_URL: https://git.kernel.org/pub/scm/linux/kernel/git/firmware/linux-firmware.git/plain/rtl_bt/rtl8852bu_fw.bin?id=0061a2dde6c3ad74dd5dbfa0f645408bf846f9cd
       FIRMWARE_SHA256: f1e0427317f147a78606ede85f3f8977ed0ab85c41c6b525560e5bd5a51e5818
+      WEBVIEW2_URL: https://go.microsoft.com/fwlink/p/?LinkId=2124703
       WDK_URL: https://go.microsoft.com/fwlink/p/?LinkID=253170
       LIBUSB0_URL: https://github.com/mcuee/libusb-win32/releases/download/release_1.4.0.0/libusb-win32-bin-1.4.0.0.zip
       LIBUSBK_URL: https://github.com/mcuee/libusbk/releases/download/V3.1.0.0/libusbK-3.1.0.0-bin.7z
@@ -31,7 +32,13 @@ jobs:
 
       - uses: microsoft/setup-msbuild@v2
 
-      - name: Build podbridge.exe (PyInstaller one-folder)
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: ui/package-lock.json
+
+      - name: Build the UI and podbridge.exe + podbridge-cli.exe (PyInstaller one-folder)
         shell: pwsh
         run: ./scripts/build_exe.ps1 -DistPath dist
 
@@ -56,6 +63,13 @@ jobs:
           Invoke-WebRequest -Uri $env:VBCABLE_URL -OutFile dist/vbcable/VBCABLE_Driver_Pack45.zip
           Expand-Archive dist/vbcable/VBCABLE_Driver_Pack45.zip -DestinationPath dist/vbcable/pack
           if (-not (Test-Path dist/vbcable/pack/VBCABLE_Setup_x64.exe)) { throw "VBCABLE_Setup_x64.exe not in the pack" }
+
+      - name: Fetch the WebView2 bootstrapper
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force dist/webview2 | Out-Null
+          Invoke-WebRequest -Uri $env:WEBVIEW2_URL -OutFile dist/webview2/MicrosoftEdgeWebview2Setup.exe
+          if (-not (Test-Path dist/webview2/MicrosoftEdgeWebview2Setup.exe)) { throw "missing MicrosoftEdgeWebview2Setup.exe" }
 
       - name: Fetch libwdi source and its driver redistributables
         shell: cmd
@@ -101,7 +115,7 @@ jobs:
             choco install innosetup --no-progress -y
             if ($LASTEXITCODE -ne 0) { throw "Inno Setup install failed" }
           }
-          $version = (& dist/podbridge/podbridge.exe --version).Split(" ")[1]
+          $version = (& dist/podbridge/podbridge-cli.exe --version).Split(" ")[1]
           & $iscc "/DAppVersion=$version" installer/podbridge.iss
           if ($LASTEXITCODE -ne 0) { throw "ISCC failed with exit code $LASTEXITCODE" }
           if (-not (Test-Path dist/podbridge-setup.exe)) { throw "podbridge-setup.exe not produced" }

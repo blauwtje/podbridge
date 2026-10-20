@@ -60,8 +60,27 @@ def test_build_script_makes_pyinstaller_onedir():
     text = BUILD.read_text(encoding="utf-8")
     assert "pyinstaller" in text
     assert "--onedir" in text
-    assert "--name podbridge" in text
-    assert "--collect-submodules podbridge" in text
+    assert '"--collect-submodules", "podbridge"' in text
+
+
+def test_build_script_builds_ui_then_windowed_and_console_exes():
+    text = BUILD.read_text(encoding="utf-8")
+    assert text.index("npm ci") < text.index("npm run build") < text.index("pyinstaller")
+    assert r'"--add-data", "src\podbridge\web;podbridge\web"' in text
+    assert '"--collect-all", "webview"' in text
+    assert "--windowed" in text and "--console" in text
+    assert re.search(r"--windowed --name podbridge\s", text)
+    assert re.search(r"--console --name podbridge-cli\s", text)
+    assert "podbridge-cli.exe" in text and "--version" in text
+
+
+def test_workflow_sets_up_node_22_and_fetches_webview2():
+    text = WORKFLOW.read_text(encoding="utf-8")
+    assert "actions/setup-node" in text
+    assert re.search(r"node-version:\s*['\"]?22", text)
+    assert "MicrosoftEdgeWebview2Setup.exe" in text
+    assert text.index("setup-node") < text.index("build_exe.ps1")
+    assert "podbridge-cli.exe --version" in text
 
 
 def test_setup_section():
@@ -104,19 +123,20 @@ def test_restart_only_after_vbcable():
 def test_one_start_menu_shortcut_and_old_ones_removed():
     icons = iss_sections()["Icons"]
     assert len(icons) == 1
-    assert entries("Icons", r'"{group}\podbridge"', r"{app}\podbridge.exe", '"run --pause"')
+    assert entries("Icons", r'"{group}\podbridge"', r"{app}\podbridge.exe", '"run"')
+    assert "--pause" not in icons[0]
     assert entries("InstallDelete", r"{group}\podbridge doctor.lnk")
     assert entries("InstallDelete", r"{group}\podbridge restore.lnk")
 
 
 def test_setup_offers_to_start_podbridge():
-    run = entries("Run", r"{app}\podbridge.exe", '"run --pause"', "skipifsilent")
+    run = entries("Run", r"{app}\podbridge.exe", '"run"', "skipifsilent")
     assert len(run) == 1
     assert "postinstall" in run[0]
 
 
 def test_silent_setup_restarts_podbridge():
-    run = entries("Run", r"{app}\podbridge.exe", '"run --pause"', "skipifnotsilent")
+    run = entries("Run", r"{app}\podbridge.exe", '"run"', "skipifnotsilent")
     assert len(run) == 1
     assert "nowait" in run[0]
 
@@ -130,7 +150,17 @@ def test_build_is_stamped_with_its_release_tag():
 
 
 def test_uninstaller_restores_and_removes_cert():
-    assert entries("UninstallRun", r"{app}\podbridge.exe", "restore --remove-cert")
+    assert entries("UninstallRun", r"{app}\podbridge-cli.exe", "restore --remove-cert")
+
+
+def test_installer_runs_webview2_setup_only_when_missing():
+    assert entries("Files", "MicrosoftEdgeWebview2Setup.exe")
+    run = entries("Run", "MicrosoftEdgeWebview2Setup.exe")
+    assert len(run) == 1
+    assert "Check: WebView2Missing" in run[0]
+    code = "\n".join(iss_sections()["Code"])
+    assert "function WebView2Missing" in code
+    assert "F3017226-FE2A-4295-8BDF-00C3A9A7E4C5" in code
 
 
 def test_firmware_step_fetches_only_the_fw_file():

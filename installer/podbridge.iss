@@ -29,10 +29,11 @@ Source: "..\dist\firmware\*.bin"; DestDir: "{app}\firmware"; Flags: ignoreversio
 Source: "..\dist\firmware\LICENCE.rtlwifi_firmware.txt"; DestDir: "{app}\firmware"; Flags: ignoreversion
 Source: "..\dist\tools\wdi-simple.exe"; DestDir: "{app}\tools"; Flags: ignoreversion
 Source: "..\dist\vbcable\VBCABLE_Driver_Pack45.zip"; DestDir: "{app}\vbcable"; Flags: ignoreversion
+Source: "..\dist\webview2\MicrosoftEdgeWebview2Setup.exe"; DestDir: "{tmp}"; Flags: deleteafterinstall
 Source: "..\dist\vbcable\pack\*"; DestDir: "{app}\vbcable\pack"; Flags: ignoreversion recursesubdirs createallsubdirs
 
 [Icons]
-Name: "{group}\podbridge"; Filename: "{app}\podbridge.exe"; Parameters: "run --pause"
+Name: "{group}\podbridge"; Filename: "{app}\podbridge.exe"; Parameters: "run"
 
 [InstallDelete]
 Type: files; Name: "{group}\podbridge doctor.lnk"
@@ -43,17 +44,20 @@ Type: filesandordirs; Name: "{app}\usb_driver"
 
 [Run]
 Filename: "{app}\vbcable\pack\VBCABLE_Setup_x64.exe"; Parameters: "-i -h"; Check: NeedsVbCable; StatusMsg: "Installing VB-CABLE..."; Flags: waituntilterminated
-Filename: "{app}\podbridge.exe"; Parameters: "run --pause"; Description: "Start podbridge now"; Flags: postinstall nowait skipifsilent
-Filename: "{app}\podbridge.exe"; Parameters: "run --pause"; Flags: nowait skipifnotsilent
+Filename: "{tmp}\MicrosoftEdgeWebview2Setup.exe"; Parameters: "/silent /install"; Check: WebView2Missing; StatusMsg: "Installing Microsoft Edge WebView2..."; Flags: waituntilterminated
+Filename: "{app}\podbridge.exe"; Parameters: "run"; Description: "Start podbridge now"; Flags: postinstall nowait skipifsilent
+Filename: "{app}\podbridge.exe"; Parameters: "run"; Flags: nowait skipifnotsilent
 
 [UninstallRun]
-Filename: "{app}\podbridge.exe"; Parameters: "restore --remove-cert"; Flags: runhidden waituntilterminated; RunOnceId: "PodbridgeRestore"
+Filename: "{app}\podbridge-cli.exe"; Parameters: "restore --remove-cert"; Flags: runhidden waituntilterminated; RunOnceId: "PodbridgeRestore"
 
 [Code]
 const
   RenderKey = 'SOFTWARE\Microsoft\Windows\CurrentVersion\MMDevices\Audio\Render';
   DeviceDescValue = '{a45c254e-df1c-4efd-8020-67d146a850e0},2';
   DeviceStateNotPresent = 4;
+
+  WebView2Key = 'SOFTWARE\WOW6432Node\Microsoft\EdgeUpdate\Clients\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}';
 
 var
   CableMissing: Boolean;
@@ -97,6 +101,13 @@ end;
 function NeedsVbCable: Boolean;
 begin
   Result := CableMissing;
+end;
+
+function WebView2Missing: Boolean;
+var
+  Version: String;
+begin
+  Result := not (RegQueryStringValue(HKLM64, WebView2Key, 'pv', Version) and (Version <> '') and (Version <> '0.0.0.0'));
 end;
 
 function NeedRestart: Boolean;
