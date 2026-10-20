@@ -5,3 +5,5 @@ build/
 dist/
 .pytest_cache/
 uv.lock
+src/podbridge/web/
+ui/node_modules/

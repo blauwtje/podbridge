@@ -1,0 +1,52 @@
+@import '@fontsource-variable/inter';
+@import 'tailwindcss';
+
+/* macOS System Settings tokens; dark follows the Windows theme. */
+:root {
+  --window: #ececec;
+  --card: rgb(255 255 255 / 0.72);
+  --card-border: rgb(0 0 0 / 0.08);
+  --foreground: #1d1d1f;
+  --muted: #6e6e73;
+  --accent: #007aff;
+  --success: #34c759;
+  --warning: #ff9f0a;
+  --danger: #ff3b30;
+  --radius: 12px;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --window: #1e1e1e;
+    --card: rgb(44 44 46 / 0.72);
+    --card-border: rgb(255 255 255 / 0.1);
+    --foreground: #f5f5f7;
+    --muted: #98989d;
+    --accent: #0a84ff;
+    --success: #30d158;
+    --warning: #ff9f0a;
+    --danger: #ff453a;
+  }
+}
+
+@theme inline {
+  --color-window: var(--window);
+  --color-card: var(--card);
+  --color-card-border: var(--card-border);
+  --color-foreground: var(--foreground);
+  --color-muted: var(--muted);
+  --color-accent: var(--accent);
+  --color-success: var(--success);
+  --color-warning: var(--warning);
+  --color-danger: var(--danger);
+  --radius-card: var(--radius);
+  --font-sans: 'Inter Variable', system-ui, sans-serif;
+}
+
+body {
+  margin: 0;
+  background: var(--window);
+  color: var(--foreground);
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+}
