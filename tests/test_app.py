@@ -312,3 +312,82 @@ def test_run_session_stops_when_pairing_times_out(monkeypatch):
     monkeypatch.setattr(pairing, "pair_with_hint", pair)
     asyncio.run(app.run_session(H(), FakeBackend(), app.Session(None, object())))
     assert calls == ["radio", "close"]
+
+
+class RecordingReporter:
+    def __init__(self):
+        self.events, self.steps = [], []
+
+    def emit(self, event):
+        self.events.append(event.kind)
+
+    def set_step(self, name, status):
+        self.steps.append((name, status))
+
+
+def test_run_session_reports_steps_and_the_discord_hint(monkeypatch):
+    from podbridge import pairing, radio
+
+    async def start(host, reporter, **kw):
+        pass
+
+    async def serve(host, address, link):
+        raise ConnectionError("stop")
+
+    monkeypatch.setattr(radio, "start_radio", start)
+    monkeypatch.setattr(app, "serve", serve)
+    reporter = RecordingReporter()
+
+    async def close():
+        pass
+
+    with pytest.raises(ConnectionError):
+        asyncio.run(app.run_session(types.SimpleNamespace(close=close), FakeBackend(), app.Session("AA", reporter)))
+    assert ("radio", "done") in reporter.steps and ("pairing", "done") in reporter.steps
+    assert "discord_hint" in reporter.events
+
+
+def test_a_reporter_that_raises_is_ignored(monkeypatch):
+    class Broken:
+        def emit(self, event):
+            raise RuntimeError("boom")
+
+        def set_step(self, *args):
+            raise RuntimeError("boom")
+
+    safe = app.SafeReporter(Broken())
+    safe.emit(app.Event("failed", "x"))
+    safe.set_step("radio", "active")
+
+
+def test_serve_once_gives_the_aap_session_settings_and_the_saved_ca_choice(monkeypatch):
+    from podbridge import bond, settings
+
+    seen = {}
+
+    class Conn:
+        def on(self, *a):
+            pass
+
+    class Fake:
+        def __init__(self, connection, queue, **options):
+            seen.update(options)
+
+        async def run(self):
+            pass
+
+    async def connect(host, address, reporter):
+        return Conn()
+
+    async def stream(host, connection):
+        pass
+
+    monkeypatch.setattr(bond, "connect_bonded", connect)
+    monkeypatch.setattr(app, "start_stream", stream)
+    monkeypatch.setattr(app, "AapSession", Fake)
+    monkeypatch.setattr(settings, "load_ca_choice", lambda: 2)
+    state = settings.SettingsState()
+    reporter = RecordingReporter()
+    asyncio.run(app.serve_once("h", "AA", app.Link(asyncio.Queue(), reporter, state)))
+    assert seen["ca_choice"] == 2 and seen["on_event"] == state.apply and seen["reporter"] is reporter
+    assert ("connected", "active") in reporter.steps

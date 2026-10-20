@@ -189,3 +189,11 @@ def test_firmware_stage_hint_when_the_download_fails(monkeypatch, tmp_path):
     ctx = doctor.Context()
     with pytest.raises(doctor.StageFailed, match="internet.*open podbridge again"):
         asyncio.run(doctor.firmware_files(ctx))
+
+
+def test_report_receives_each_line_instead_of_the_console(capsys):
+    lines = []
+    ok = asyncio.run(doctor.run_stages([make("one"), make("two", doctor.StageFailed("fix"))], doctor.Context(), report=lines.append))
+    assert ok is False
+    assert lines == ["PASS one", "FAIL two: fix"]
+    assert capsys.readouterr().out == ""

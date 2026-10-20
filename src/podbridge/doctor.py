@@ -230,22 +230,23 @@ def record(line: str) -> None:
         log.write(f"{datetime.now().isoformat(timespec='seconds')} {line}\n")
 
 
-async def run_stages(stages, ctx: Context, quiet: bool = False) -> bool:
+async def run_stages(stages, ctx: Context, **options) -> bool:
     """Run each stage in order, record PASS or FAIL, and stop at the first failure.
 
-    A quiet run records only the failure."""
+    A quiet run records only the failure. Options: quiet; report(line), default `record`."""
+    quiet, report = options.get("quiet", False), options.get("report", record)
     async with ctx.stack:
         for stage in stages:
             try:
                 detail = await stage(ctx)
             except StageFailed as exc:
-                record(f"FAIL {stage.__doc__}: {exc}")
+                report(f"FAIL {stage.__doc__}: {exc}")
                 return False
             except Exception as exc:
-                record(f"FAIL {stage.__doc__}: {type(exc).__name__}: {exc}")
+                report(f"FAIL {stage.__doc__}: {type(exc).__name__}: {exc}")
                 return False
             if not quiet:
-                record(f"PASS {stage.__doc__}" + (f": {detail}" if detail else ""))
+                report(f"PASS {stage.__doc__}" + (f": {detail}" if detail else ""))
     return True
 
 

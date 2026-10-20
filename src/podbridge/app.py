@@ -11,7 +11,7 @@ from typing import Callable, NamedTuple
 from podbridge import paths
 from podbridge.a2dp_encoder import A2dpEncoder
 from podbridge.aap_session import AapSession
-from podbridge.events import ConsoleReporter
+from podbridge.events import ConsoleReporter, Event
 from podbridge.audio_io import CABLE_PLAYBACK, AudioBackend, muted_default_output
 from podbridge.host import EncodedPacketSource, Host
 from podbridge.mic_decoder import MicDecoder
@@ -45,12 +45,42 @@ DISCORD_HINT = (
 class Link(NamedTuple):
     queue: asyncio.Queue
     reporter: object
+    settings: object = None
+
+
+class SafeReporter:
+    """Forwards events and step changes to `inner`; a reporter that raises is logged and ignored."""
+
+    def __init__(self, inner):
+        self.inner = inner
+
+    def emit(self, event) -> None:
+        try:
+            self.inner.emit(event)
+        except Exception:
+            log.warning("reporter failed on %s", event.kind, exc_info=True)
+
+    def set_step(self, name, status) -> None:
+        setter = getattr(self.inner, "set_step", None)
+        if setter is None:
+            return
+        try:
+            setter(name, status)
+        except Exception:
+            log.warning("reporter failed on step %s", name, exc_info=True)
 
 
 class Session(NamedTuple):
-    address: str | None
-    reporter: object
+    address: str | None = None
+    reporter: object = None
     make_backend: Callable | None = None
+
+
+def step(reporter, name, status) -> None:
+    """Tell the reporter a run step changed; a console reporter has no steps."""
+    setter = getattr(reporter, "set_step", None)
+    if setter is not None:
+        setter(name, status)
 
 
 def mono_to_stereo(samples: array) -> bytes:
@@ -130,13 +160,20 @@ async def start_stream(host: Host, connection):
 
 
 async def serve_once(host: Host, address: str, link: Link) -> None:
-    from podbridge import bond
+    from podbridge import bond, settings
 
+    step(link.reporter, "connecting", "active")
     connection = await bond.connect_bonded(host, address, link.reporter)
     disconnected = asyncio.get_running_loop().create_future()
     connection.on("disconnection", lambda *_: disconnected.done() or disconnected.set_result(None))
     await start_stream(host, connection)
-    aap = asyncio.create_task(AapSession(connection, link.queue).run())
+    step(link.reporter, "connecting", "done")
+    step(link.reporter, "connected", "active")
+    state = link.settings or settings.SettingsState()
+    session = AapSession(
+        connection, link.queue, on_event=state.apply, ca_choice=settings.load_ca_choice(), reporter=link.reporter
+    )
+    aap = asyncio.create_task(session.run())
     try:
         await asyncio.wait({aap, disconnected}, return_when=asyncio.FIRST_COMPLETED)
         if aap.done():
@@ -159,17 +196,24 @@ async def run_session(host: Host, backend: AudioBackend, session: Session) -> No
     """
     from podbridge import pairing, radio, supervise
 
-    reporter, address, make_backend = session.reporter, session.address, session.make_backend
+    reporter = SafeReporter(session.reporter or ConsoleReporter())
+    address, make_backend = session.address, session.make_backend
+    step(reporter, "firmware", "active")
+    step(reporter, "radio", "active")
     await radio.start_radio(host, reporter)
+    step(reporter, "firmware", "done")
+    step(reporter, "radio", "done")
     if address is None:
+        step(reporter, "pairing", "active")
         connection = await pairing.pair_with_hint(host, reporter)
         if connection is None:
             await host.close()
             return
         address = connection.peer_address.to_string(False)
         save_address(address)
+    step(reporter, "pairing", "done")
     queue: asyncio.Queue = asyncio.Queue()
-    print(DISCORD_HINT)
+    reporter.emit(Event("discord_hint", DISCORD_HINT))
     current = [backend]
 
     def reopen() -> None:
@@ -194,35 +238,54 @@ async def run_session(host: Host, backend: AudioBackend, session: Session) -> No
         await host.close()
 
 
-def run(args, machine=None) -> int:
+def refuse(reporter, console: bool, message: str) -> int:
+    """Print a console refusal, or send it to the reporter as a failure; exit status 1."""
+    if console:
+        print(f"podbridge: {message}", file=sys.stderr)
+    else:
+        reporter.emit(Event("failed", message, "Fix this and open podbridge again."))
+    return 1
+
+
+def run(args, machine=None, reporter=None) -> int:
     from podbridge import crash, doctor, firmware_watch, winusb
     from podbridge.audio_io import PyAudioWPatchBackend
 
     machine = machine or winusb.Machine()
-    reporter = ConsoleReporter()
+    console = reporter is None
+    reporter = SafeReporter(ConsoleReporter() if console else reporter)
     pending = crash.restore_pending(machine.state_path) if hasattr(machine, "state_path") else None
     if pending:
         reporter.emit(pending)
     ctx = doctor.Context(args=args, machine=machine)
-    if not asyncio.run(doctor.run_stages(doctor.PREFLIGHT, ctx, quiet=True)):
+    step(reporter, "checks", "active")
+
+    def report(line: str) -> None:
+        doctor.record(line)
+        if not console and line.startswith("FAIL"):
+            reporter.emit(Event("failed", line, "Fix this and open podbridge again."))
+
+    if not asyncio.run(doctor.run_stages(doctor.PREFLIGHT, ctx, quiet=True, report=report)):
         return 1
+    step(reporter, "checks", "done")
     vid, pid = ctx.vid, ctx.pid
     try:
         backend = PyAudioWPatchBackend(output_source=args.output_source)
     except Exception as exc:
-        print(f"podbridge: cannot open the audio devices ({exc})", file=sys.stderr)
-        return 1
+        return refuse(reporter, console, f"cannot open the audio devices ({exc})")
     if not args.output_source and "CABLE In" in backend.render_name():
         backend.close()
-        print(
-            "podbridge: the Windows default speaker is a VB-CABLE device; set it to your real speakers "
+        return refuse(
+            reporter,
+            console,
+            "the Windows default speaker is a VB-CABLE device; set it to your real speakers "
             "or headphones and open podbridge again",
-            file=sys.stderr,
         )
-        return 1
     handler = firmware_watch.install(reporter)
     try:
+        step(reporter, "driver", "active")
         with winusb.bound(vid, pid, machine), muted_default_output(backend, args.output_source):
+            step(reporter, "driver", "done")
             host = Host(f"usb:{vid:04X}:{pid:04X}")
             address = getattr(args, "address", None) or saved_address()
             asyncio.run(run_session(host, backend, Session(address, reporter, lambda: PyAudioWPatchBackend(output_source=args.output_source))))
