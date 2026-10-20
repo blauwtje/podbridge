@@ -100,9 +100,11 @@ def test_firmware_env_follows_firmware_dir(monkeypatch, tmp_path):
 def test_encoder_output_becomes_rtp_packets(codec):
     async def run():
         source = host.EncodedPacketSource(A2dpEncoder(codec))
-        source.feed(tone())
         gen = aiter(source.packets)
-        return [await asyncio.wait_for(gen.__anext__(), 1) for _ in range(3)]
+        first = asyncio.ensure_future(gen.__anext__())
+        await asyncio.sleep(0)  # the pump starts before the capture feeds it
+        source.feed(tone())
+        return [await asyncio.wait_for(first, 1)] + [await asyncio.wait_for(gen.__anext__(), 1) for _ in range(2)]
 
     packets = asyncio.run(run())
     assert [p.sequence_number for p in packets] == [0, 1, 2]
@@ -116,7 +118,7 @@ def test_encoder_output_becomes_rtp_packets(codec):
 def test_queue_drops_oldest_when_full():
     source = host.EncodedPacketSource(A2dpEncoder("aac"))
     source.feed(tone(5))
-    assert source._queue.qsize() == host.PACKET_QUEUE
+    assert source._queue.qsize() == source._queue.maxsize
 
 
 @pytest.mark.parametrize("codec", ["aac", "sbc"])

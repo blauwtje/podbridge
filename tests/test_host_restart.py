@@ -85,11 +85,18 @@ async def wait_until(condition, timeout=2.0):
             await asyncio.sleep(0.005)
 
 
+async def feed_until_sent(source, sent=0, timeout=2.0):
+    """Feed audio live, as the capture does, until the pump has sent more than `sent` packets."""
+    async with asyncio.timeout(timeout):
+        while source.sent <= sent:
+            source.feed(tone(0.05))
+            await asyncio.sleep(0.005)
+
+
 async def _streaming(h):
     """Start the stream and wait until its pump has sent a packet."""
-    h.source.feed(tone(0.5))
     stream = await h.stream("acl")
-    await wait_until(lambda: h.source.sent > 0)
+    await feed_until_sent(h.source)
     return stream
 
 
@@ -115,8 +122,7 @@ def test_peer_suspend_is_followed_by_a_start_and_the_pump_sends_again(monkeypatc
         assert stream.state == avdtp.State.OPEN
         starts, sent = protocol.remote.starts, h.source.sent
         await wait_until(lambda: stream.state == avdtp.State.STREAMING)
-        h.source.feed(tone(0.5))
-        await wait_until(lambda: h.source.sent > sent)
+        await feed_until_sent(h.source, sent)
         await _finished(h)
         await _stop_pump(stream)
         return protocol.remote.starts - starts
