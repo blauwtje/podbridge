@@ -254,11 +254,13 @@ def restore_driver(machine: Machine) -> bool:
             machine.state_path.unlink()
             return False
         raise DriverError(f"{REBOOT_MESSAGE}; driver-state.json kept")
-    if libwdi is not None:
-        check_libwdi(machine, libwdi)
     driver = current_driver(machine, instance_id)
     if driver is None:
         raise DriverError(f"device {instance_id} not found; driver-state.json kept for the next restore")
+    on_libwdi = libwdi is not None and driver.lower() == libwdi.lower()
+    # A libwdi INF already gone from the driver store has no provider; that is a finished delete, not a foreign driver.
+    if libwdi is not None and (on_libwdi or driver_provider(machine, libwdi) is not None):
+        check_libwdi(machine, libwdi)
     reboot = False
     if libwdi is not None and driver.lower() == libwdi.lower():
         reboot = run_reporting_reboot(machine, ["pnputil", "/delete-driver", libwdi, "/uninstall", "/force"])[1]
