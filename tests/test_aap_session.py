@@ -7,7 +7,7 @@ from bumble.device import Device
 from bumble.host import Host
 from bumble.link import LocalLink
 
-from podbridge import aap, aap_session
+from podbridge import aap, aap_inbound, aap_session
 from podbridge.aap_session import AapSession
 
 
@@ -94,3 +94,41 @@ def test_open_retries_then_succeeds(monkeypatch):
 
     asyncio.run(scenario())
     assert attempts == [aap.PSM] * 3
+
+
+def test_routes_events_sends_writes_and_ca_choice(monkeypatch):
+    fast(monkeypatch)
+    sent, events = [], []
+
+    class Channel:
+        sink = None
+
+        def write(self, data):
+            sent.append(data)
+
+    channel = Channel()
+
+    class Connection:
+        async def create_l2cap_channel(self, spec):
+            return channel
+
+    battery = bytes.fromhex("040004000400") + bytes([1, 1, 0, 80, 1, 0])
+    ctl = aap.control(0x01, 2)
+
+    async def scenario():
+        session = AapSession(Connection(), asyncio.Queue(), on_event=events.append, ca_choice=1)
+        task = asyncio.create_task(session.run())
+        await asyncio.wait_for(_until(lambda: len(sent) == 5), 5)
+        assert sent[3] == aap.control(0x28, 1)
+        channel.sink(battery)
+        channel.sink(ctl)
+        channel.sink(b"\x00junk")
+        session.send(aap.control(0x0D, 2))
+        await asyncio.wait_for(_until(lambda: len(sent) == 6), 5)
+        task.cancel()
+        assert sent[5] == aap.control(0x0D, 2)
+
+    asyncio.run(scenario())
+    assert events[0] == aap_inbound.Battery(1, 80, 1)
+    assert events[1] == (0x01, bytes([2, 0, 0, 0]))
+    assert len(events) == 2
