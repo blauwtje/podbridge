@@ -24,7 +24,7 @@ def make_device(name, address, link):
 
 
 def fast(monkeypatch):
-    for name, value in dict(SETTLE_S=0.01, OPEN_RETRY_S=0.01, COMMAND_GAP_S=0.01, STALL_S=0.2, RESTART_MIN_S=0.4, POLL_S=0.02).items():
+    for name, value in dict(SETTLE_S=0.01, OPEN_RETRY_S=0.01, COMMAND_GAP_S=0.01, STALL_S=0.2, RESTART_MIN_S=0.4, POLL_S=0.02, AAP_RETRY_S=0.02, AAP_GIVE_UP=2).items():
         monkeypatch.setattr(aap_session, name, value)
 
 
@@ -132,3 +132,45 @@ def test_routes_events_sends_writes_and_ca_choice(monkeypatch):
     assert events[0] == aap_inbound.Battery(1, 80, 1)
     assert events[1] == (0x01, bytes([2, 0, 0, 0]))
     assert len(events) == 2
+
+
+def test_channel_failures_are_reported_retried_and_close_restarts(monkeypatch):
+    fast(monkeypatch)
+    emitted, opens = [], []
+
+    class Reporter:
+        def emit(self, event):
+            emitted.append(event)
+
+    class Channel:
+        def __init__(self):
+            self.handlers = {}
+            self.sent = []
+
+        def on(self, name, handler):
+            self.handlers[name] = handler
+
+        def write(self, data):
+            self.sent.append(data)
+
+    channel = Channel()
+
+    class Connection:
+        async def create_l2cap_channel(self, spec):
+            opens.append(1)
+            if len(opens) <= 3 * aap_session.OPEN_RETRIES:
+                raise core.ConnectionError(0, 0, 0, "refused")
+            return channel
+
+    async def scenario():
+        task = asyncio.create_task(AapSession(Connection(), asyncio.Queue(), reporter=Reporter()).run())
+        await asyncio.wait_for(_until(lambda: len(channel.sent) == 5), 5)
+        channel.handlers["close"]()
+        await asyncio.wait_for(_until(lambda: len(channel.sent) == 10), 5)
+        assert not task.done()
+        task.cancel()
+
+    asyncio.run(scenario())
+    kinds = [e.kind for e in emitted]
+    assert kinds == ["aap_retry", "aap_retry", "mic_unavailable", "aap_retry"]
+    assert emitted[2].message == "mic unavailable, audio output only"

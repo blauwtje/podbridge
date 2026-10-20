@@ -4,8 +4,10 @@ import asyncio
 import time
 
 from bumble import l2cap
+from bumble.core import BaseBumbleError
 
 from podbridge import aap, aap_inbound
+from podbridge.events import Event
 
 SETTLE_S = 1.5
 OPEN_RETRIES = 3
@@ -15,14 +17,16 @@ STALL_S = 2.0
 RESTART_MIN_S = 5.0
 MTU = 4096
 POLL_S = 0.25
-
+AAP_RETRY_S = 10.0
+AAP_GIVE_UP = 6
+UNAVAILABLE = "mic unavailable, audio output only"
 
 
 class AapSession:
     """Puts each mic access unit on `queue`; never sends STOP.
 
     Other inbound frames reach `on_event` as aap_inbound events or (setting id, data) tuples.
-    Options: clock, on_event, ca_choice (keywords). Frames passed to `send` go out from `run`'s loop.
+    Options: clock, on_event, ca_choice, reporter (keywords); a failing channel is retried, never raised. Frames passed to `send` go out from `run`'s loop.
     """
 
     def __init__(self, connection, queue: asyncio.Queue, **options):
@@ -31,6 +35,7 @@ class AapSession:
         self.clock = options.get("clock", time.monotonic)
         self.on_event = options.get("on_event")
         self.ca_choice = options.get("ca_choice")
+        self.reporter = options.get("reporter")
         self.outgoing: asyncio.Queue = asyncio.Queue()
         self.restarts = 0
         self._last_frame = 0.0
@@ -71,10 +76,34 @@ class AapSession:
         for event in events:
             self.on_event(event)
 
+    def _emit(self, kind: str, message: str, attempt: int) -> None:
+        if self.reporter is not None:
+            self.reporter.emit(Event(kind, message, "", attempt))
+
+    def _report_failure(self, exc: Exception, attempt: int) -> None:
+        self._emit("aap_retry", f"The AirPods mic channel failed: {exc}", attempt)
+        if attempt == AAP_GIVE_UP:
+            self._emit("mic_unavailable", UNAVAILABLE, attempt)
+
     async def run(self) -> None:
-        """Run until cancelled or the channel fails to open."""
+        """Run until cancelled; open or write failures are reported and retried, never raised."""
         await asyncio.sleep(SETTLE_S)
+        attempt = 0
+        while True:
+            try:
+                await self._session()
+                attempt = 0
+            except BaseBumbleError as exc:
+                attempt += 1
+                self._report_failure(exc, attempt)
+            await asyncio.sleep(AAP_RETRY_S)
+
+    async def _session(self) -> None:
+        """Open the channel and serve it until it closes."""
         channel = await self._open()
+        closed = asyncio.Event()
+        if hasattr(channel, "on"):
+            channel.on("close", closed.set)
         channel.sink = self._on_sdu
         ca = aap.control(0x28, self.ca_choice) if self.ca_choice is not None else aap.CONVERSATIONAL_AWARENESS_OFF
         sequence = (aap.HANDSHAKE, aap.FEATURES, aap.NOTIFICATIONS, ca, aap.START)
@@ -83,7 +112,7 @@ class AapSession:
                 await asyncio.sleep(COMMAND_GAP_S)
             channel.write(command)
         self._last_start = self._last_frame = self.clock()
-        while True:
+        while not closed.is_set():
             await asyncio.sleep(POLL_S)
             while not self.outgoing.empty():
                 channel.write(self.outgoing.get_nowait())
