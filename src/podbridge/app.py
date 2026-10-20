@@ -97,6 +97,7 @@ class Session(NamedTuple):
     address: str | None = None
     reporter: object = None
     make_backend: Callable | None = None
+    recover: tuple = ()  # (what, step) pairs start_radio runs when the radio does not answer
 
 
 def step(reporter, name, status) -> None:
@@ -271,7 +272,7 @@ async def run_session(host: Host, backend: AudioBackend, session: Session) -> No
     try:
         step(reporter, "firmware", "active")
         step(reporter, "radio", "active")
-        await radio.start_radio(host, reporter)
+        await radio.start_radio(host, reporter, recover=session.recover)
         step(reporter, "firmware", "done")
         step(reporter, "radio", "done")
         if address is None:
@@ -316,7 +317,7 @@ def refuse(reporter, console: bool, message: str) -> int:
 
 
 def run(args, machine=None, reporter=None) -> int:
-    from podbridge import doctor, firmware_watch, winusb
+    from podbridge import doctor, firmware_watch, radio, winusb
     from podbridge.audio_io import PyAudioWPatchBackend
 
     machine = machine or winusb.Machine()
@@ -357,7 +358,9 @@ def run(args, machine=None, reporter=None) -> int:
             step(reporter, "driver", "done")
             host = Host(f"usb:{vid:04X}:{pid:04X}")
             address = getattr(args, "address", None) or saved_address()
-            asyncio.run(run_session(host, backend, Session(address, reporter, lambda: PyAudioWPatchBackend(output_source=args.output_source))))
+            make_backend = lambda: PyAudioWPatchBackend(output_source=args.output_source)
+            recover = radio.recovery_steps(machine, vid, pid)
+            asyncio.run(run_session(host, backend, Session(address, reporter, make_backend, recover)))
             session_done = True
     except (KeyboardInterrupt, asyncio.CancelledError) as exc:
         # Ctrl+C or the window closing: a normal end, unless the driver could not be given back.

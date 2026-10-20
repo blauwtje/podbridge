@@ -8,19 +8,23 @@ NEXT_STEP = "run podbridge doctor"
 
 
 def describe(exc) -> Event:
-    """One-line cause for any error; DriverError and Bumble errors name their own kind."""
+    """One-line cause for any error; RadioError, DriverError and Bumble errors name their own kind."""
     from bumble.core import BaseBumbleError
 
+    from podbridge.radio import RadioError
     from podbridge.winusb import DriverError
 
-    if isinstance(exc, DriverError):
+    next_step = NEXT_STEP
+    if isinstance(exc, RadioError):
+        prefix, next_step = "Radio problem", exc.next_step
+    elif isinstance(exc, DriverError):
         prefix = "Driver problem"
     elif isinstance(exc, BaseBumbleError):
         prefix = "Bluetooth problem"
     else:
         prefix = "Unexpected error"
     cause = " ".join(str(exc).split()) or type(exc).__name__
-    return Event("failed", f"{prefix}: {cause}", NEXT_STEP)
+    return Event("failed", f"{prefix}: {cause}", next_step)
 
 
 def restore_failure(exc) -> Event:

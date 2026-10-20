@@ -30,6 +30,7 @@ class Context:
     pid: int = 0
     host: object = None
     connection: object = None
+    radio_timeout: float = 30.0
     queue: asyncio.Queue = field(default_factory=asyncio.Queue)
 
     @property
@@ -87,12 +88,17 @@ async def winusb_bind(ctx: Context) -> None:
 
 async def bumble_transport(ctx: Context) -> None:
     """Bumble transport and firmware load"""
+    from podbridge import radio
+    from podbridge.events import ConsoleReporter
     from podbridge.host import Host
 
     ctx.host = Host(f"usb:{ctx.vid:04X}:{ctx.pid:04X}")
     ctx.stack.push_async_callback(ctx.host.close)
+    recover = radio.recovery_steps(ctx.machine, ctx.vid, ctx.pid)
     try:
-        await ctx.host.start()
+        await radio.start_radio(ctx.host, ConsoleReporter(), timeout=ctx.radio_timeout, recover=recover)
+    except radio.RadioError as exc:
+        raise StageFailed(f"{exc}; {exc.next_step}") from exc
     except Exception as exc:
         raise StageFailed(f"{exc}; check the firmware files and that WinUSB is bound") from exc
 
