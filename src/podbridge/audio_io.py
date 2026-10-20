@@ -2,6 +2,7 @@
 import atexit
 import threading
 import time
+import warnings
 from array import array
 from contextlib import contextmanager
 from typing import Iterator, Protocol
@@ -165,11 +166,22 @@ def to_48k_stereo(raw: bytes, channels: int, rate: int, frames: int, carry: list
     return stereo.tobytes()
 
 
+# comtypes 1.4.17 warns on import on Python 3.15 (enthought/comtypes#894); fixed upstream for 1.5.0, not yet released
+COMTYPES_PY315_WARNING = r"You are running 'comtypes' on Python 3\.15, where the behavior of enum types"
+
+
+def import_comtypes():
+    """comtypes, imported without its Python 3.15 FutureWarning."""
+    with warnings.catch_warnings():
+        warnings.filterwarnings("ignore", message=COMTYPES_PY315_WARNING, category=FutureWarning)
+        import comtypes
+    return comtypes
+
+
 @contextmanager
 def com_initialised() -> Iterator[None]:
     """COM objects are per thread; the console-close handler runs on a thread that never initialised it."""
-    import comtypes
-
+    comtypes = import_comtypes()
     comtypes.CoInitialize()
     try:
         yield
@@ -201,10 +213,11 @@ class PyAudioWPatchBackend:
 
     @staticmethod
     def _default_endpoint_id() -> str:
-        from pycaw.constants import EDataFlow, ERole
-        from pycaw.pycaw import AudioUtilities
-
+        # why: pycaw.constants imports comtypes, so com_initialised must import it first, quietly
         with com_initialised():
+            from pycaw.constants import EDataFlow, ERole
+            from pycaw.pycaw import AudioUtilities
+
             enumerator = AudioUtilities.GetDeviceEnumerator()
             return enumerator.GetDefaultAudioEndpoint(EDataFlow.eRender.value, ERole.eMultimedia.value).GetId()
 
