@@ -1,5 +1,6 @@
 """One Bumble host: pairs with the AirPods, keeps the bond and streams A2DP from the encoder."""
 import asyncio
+import logging
 import os
 
 from bumble import a2dp, avdtp, core, hci, sdp
@@ -10,6 +11,7 @@ from bumble.transport import open_transport
 from podbridge import paths
 from podbridge.a2dp_encoder import SAMPLE_RATE, SBC_SAMPLE_RATE, A2dpEncoder
 
+log = logging.getLogger("podbridge")
 APPLE_VENDOR_ID = 0x004C
 AIRPODS_NAME = "AirPods"
 A2DP_SOURCE_HANDLE = 0x10001
@@ -152,23 +154,36 @@ class EncodedPacketSource:
 async def _first_connection(*attempts):
     """Run the connection attempts together and return the first that succeeds.
 
-    The others are cancelled; if every attempt fails, the first failure is raised.
+    The others are cancelled, and one that connected anyway is disconnected; if every
+    attempt fails, the first failure is raised.
     """
     tasks = [asyncio.ensure_future(attempt) for attempt in attempts]
-    errors = []
+    errors, winner = [], None
     try:
         pending = set(tasks)
         while pending:
             done, pending = await asyncio.wait(pending, return_when=asyncio.FIRST_COMPLETED)
             for task in done:
                 if task.exception() is None:
-                    return task.result()
+                    winner = task.result()
+                    return winner
                 errors.append(task.exception())
         raise errors[0]
     finally:
         for task in tasks:
             task.cancel()
-        await asyncio.gather(*tasks, return_exceptions=True)
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        for loser in results:
+            if loser is not winner and not isinstance(loser, BaseException):
+                await _disconnect(loser)
+
+
+async def _disconnect(connection) -> None:
+    """Drop a connection that lost the race; a failure is logged, not raised over the winner."""
+    try:
+        await connection.disconnect()
+    except Exception:
+        log.warning("could not disconnect the losing connection to %s", connection.peer_address, exc_info=True)
 
 
 class Host:
@@ -210,7 +225,10 @@ class Host:
             return await self.device.connect(address, transport=core.PhysicalTransport.BR_EDR)
         except asyncio.CancelledError:
             # Bumble only cancels a page on its own timeout; stop the controller's page here.
-            await self.device.cancel_connection(address)
+            try:
+                await self.device.cancel_connection(address)
+            except Exception:
+                log.warning("could not cancel the page to %s", address, exc_info=True)
             raise
 
     async def _find_airpods(self):
