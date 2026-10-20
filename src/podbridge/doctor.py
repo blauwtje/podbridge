@@ -50,7 +50,7 @@ async def admin_rights(ctx: Context) -> str | None:
     except (AttributeError, OSError) as exc:
         raise StageFailed(f"cannot read admin rights ({exc}); run on Windows") from exc
     if not is_admin:
-        raise StageFailed("run podbridge doctor as administrator (accept the UAC prompt)")
+        raise StageFailed("run podbridge as administrator (accept the UAC prompt)")
     return None
 
 
@@ -71,7 +71,7 @@ async def firmware_files(ctx: Context) -> str:
 
     folder = paths.firmware_dir()
     if not (folder / app.FIRMWARE_FILE).is_file():
-        raise StageFailed(f"missing {app.FIRMWARE_FILE} in {folder}; run podbridge firmware")
+        raise StageFailed(f"missing {app.FIRMWARE_FILE} in {folder}")
     return str(folder)
 
 
@@ -182,7 +182,7 @@ async def cable_devices(ctx: Context) -> str:
     except (ImportError, OSError) as exc:
         raise StageFailed(f"cannot read the audio endpoints ({exc})") from exc
     if missing:
-        raise StageFailed(f"missing {', '.join(sorted(missing))}; reinstall VB-CABLE")
+        raise StageFailed(f"missing {', '.join(sorted(missing))}; VB-CABLE is not installed or is disabled")
     return f"{CABLE_PLAYBACK}, {CABLE_CAPTURE}"
 
 
@@ -214,6 +214,9 @@ STAGES = (
     cable_devices,
     loopback_while_muted,
 )
+
+
+PREFLIGHT = (admin_rights, usb_id, firmware_files, cable_devices)
 
 
 def record(line: str) -> None:

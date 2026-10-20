@@ -146,11 +146,14 @@ async def run_session(host: Host, backend: AudioBackend, address: str | None) ->
 
 
 def run(args, machine=None) -> int:
-    from podbridge import winusb
+    from podbridge import doctor, winusb
     from podbridge.audio_io import PyAudioWPatchBackend
 
     machine = machine or winusb.Machine()
-    vid, pid = find_usb_ids(args, machine)
+    ctx = doctor.Context(args=args, machine=machine)
+    if not asyncio.run(doctor.run_stages(doctor.PREFLIGHT, ctx)):
+        return 1
+    vid, pid = ctx.vid, ctx.pid
     try:
         backend = PyAudioWPatchBackend(output_source=args.output_source)
     except Exception as exc:

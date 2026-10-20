@@ -107,7 +107,7 @@ def test_output_pipeline_follows_source_swap():
     asyncio.run(go())
 
 
-def test_run_passes_output_source_to_backend(monkeypatch):
+def test_run_passes_output_source_to_backend(preflight_usb_only, monkeypatch):
     from contextlib import contextmanager
 
     from podbridge import audio_io, winusb
@@ -149,7 +149,7 @@ def test_start_stream_retries_with_sbc():
     assert host.codec == "sbc" and host.source.encoder.codec == "sbc"
 
 
-def test_run_restores_driver_around_session(monkeypatch):
+def test_run_restores_driver_around_session(preflight_usb_only, monkeypatch):
     from contextlib import contextmanager
 
     from podbridge import audio_io, winusb
@@ -177,7 +177,7 @@ def test_run_restores_driver_around_session(monkeypatch):
     assert events == [("bind", 0x0BDA, 0x887B), "session", "restore"]
 
 
-def test_run_reports_a_backend_that_cannot_open(monkeypatch, capsys):
+def test_run_reports_a_backend_that_cannot_open(preflight_usb_only, monkeypatch, capsys):
     from podbridge import audio_io
 
     def broken(output_source=None):
@@ -187,3 +187,32 @@ def test_run_reports_a_backend_that_cannot_open(monkeypatch, capsys):
     args = types.SimpleNamespace(transport="usb:0bda:887b", output_source="x", address="AA")
     assert app.run(args, machine=object()) == 1
     assert "no loopback device" in capsys.readouterr().err
+
+
+@pytest.fixture
+def preflight_usb_only(monkeypatch, tmp_path):
+    from podbridge import doctor
+
+    monkeypatch.setenv("APPDATA", str(tmp_path))
+    monkeypatch.setattr(doctor, "PREFLIGHT", (doctor.usb_id,))
+
+
+def test_run_stops_before_binding_when_preflight_fails(monkeypatch, tmp_path, capsys):
+    from podbridge import doctor, winusb
+
+    async def failing(ctx):
+        raise doctor.StageFailed("fix this")
+
+    failing.__doc__ = "setup"
+    monkeypatch.setenv("APPDATA", str(tmp_path))
+    monkeypatch.setattr(doctor, "PREFLIGHT", (failing,))
+    monkeypatch.setattr(winusb, "bound", lambda *a, **k: pytest.fail("bound the driver"))
+    args = types.SimpleNamespace(transport="usb:0bda:887b", output_source="x")
+    assert app.run(args, machine=object()) == 1
+    assert "FAIL setup: fix this" in capsys.readouterr().out
+
+
+def test_preflight_is_the_four_setup_stages():
+    from podbridge import doctor
+
+    assert doctor.PREFLIGHT == (doctor.admin_rights, doctor.usb_id, doctor.firmware_files, doctor.cable_devices)
