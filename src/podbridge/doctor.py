@@ -71,7 +71,15 @@ async def firmware_files(ctx: Context) -> str:
 
     folder = paths.firmware_dir()
     if not (folder / app.FIRMWARE_FILE).is_file():
-        raise StageFailed(f"missing {app.FIRMWARE_FILE} in {folder}")
+        target = paths.appdata_dir() / "firmware"
+        target.mkdir(parents=True, exist_ok=True)
+        error = app.fetch(target / app.FIRMWARE_FILE)
+        if error:
+            raise StageFailed(
+                f"missing {app.FIRMWARE_FILE} and the download failed ({error}); "
+                "connect to the internet and open podbridge again"
+            )
+        folder = paths.firmware_dir()
     return str(folder)
 
 

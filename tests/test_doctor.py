@@ -166,7 +166,7 @@ def test_firmware_stage_downloads_a_missing_file(monkeypatch, tmp_path):
     assert (paths.appdata_dir() / "firmware" / app.FIRMWARE_FILE).is_file()
 
 
-def test_firmware_stage_hint_when_the_download_fails(monkeypatch, tmp_path, caplog):
+def test_firmware_stage_hint_when_the_download_fails(monkeypatch, tmp_path):
     from podbridge import app
 
     monkeypatch.setattr(paths, "install_dir", lambda: tmp_path / "install")
