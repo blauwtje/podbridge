@@ -342,7 +342,8 @@ def test_run_session_reports_steps_and_the_discord_hint(monkeypatch):
         pass
 
     with pytest.raises(ConnectionError):
-        asyncio.run(app.run_session(types.SimpleNamespace(close=close), FakeBackend(), app.Session("AA", reporter)))
+        host = types.SimpleNamespace(close=close, source=EncodedPacketSource(A2dpEncoder("aac")))
+        asyncio.run(app.run_session(host, FakeBackend(), app.Session("AA", reporter)))
     assert ("radio", "done") in reporter.steps and ("pairing", "done") in reporter.steps
     assert "discord_hint" in reporter.events
 
