@@ -6,11 +6,12 @@ import logging
 import sys
 import urllib.request
 from array import array
-from typing import Callable
+from typing import Callable, NamedTuple
 
 from podbridge import paths
 from podbridge.a2dp_encoder import A2dpEncoder
 from podbridge.aap_session import AapSession
+from podbridge.events import ConsoleReporter
 from podbridge.audio_io import CABLE_PLAYBACK, AudioBackend, muted_default_output
 from podbridge.host import EncodedPacketSource, Host
 from podbridge.mic_decoder import MicDecoder
@@ -39,6 +40,17 @@ DISCORD_HINT = (
     '  output "Default"\n'
     'Ignore "CABLE Input" and "CABLE In 16ch": podbridge uses them itself.'
 )
+
+
+class Link(NamedTuple):
+    queue: asyncio.Queue
+    reporter: object
+
+
+class Session(NamedTuple):
+    address: str | None
+    reporter: object
+    make_backend: Callable | None = None
 
 
 def mono_to_stereo(samples: array) -> bytes:
@@ -117,12 +129,14 @@ async def start_stream(host: Host, connection):
     return await host.stream(connection)
 
 
-async def serve_once(host: Host, address: str, queue: asyncio.Queue) -> None:
-    connection = await host.connect(address)
+async def serve_once(host: Host, address: str, link: Link) -> None:
+    from podbridge import bond
+
+    connection = await bond.connect_bonded(host, address, link.reporter)
     disconnected = asyncio.get_running_loop().create_future()
     connection.on("disconnection", lambda *_: disconnected.done() or disconnected.set_result(None))
     await start_stream(host, connection)
-    aap = asyncio.create_task(AapSession(connection, queue).run())
+    aap = asyncio.create_task(AapSession(connection, link.queue).run())
     try:
         await asyncio.wait({aap, disconnected}, return_when=asyncio.FIRST_COMPLETED)
         if aap.done():
@@ -131,42 +145,64 @@ async def serve_once(host: Host, address: str, queue: asyncio.Queue) -> None:
         aap.cancel()
 
 
-async def serve(host: Host, address: str, queue: asyncio.Queue) -> None:
-    """Connect, stream A2DP, run the AAP session; reconnect in a loop after a disconnect."""
-    while True:
-        try:
-            await serve_once(host, address, queue)
-        except (ConnectionError, OSError, TimeoutError, RuntimeError) as exc:
-            print(f"podbridge: {exc}; retrying", file=sys.stderr)
-        await asyncio.sleep(RECONNECT_S)
+async def serve(host: Host, address: str, link: Link) -> None:
+    """Connect, stream A2DP, run the AAP session; reconnect with a growing wait after a failure."""
+    from podbridge import retry
+
+    await retry.retry_serve(lambda: serve_once(host, address, link), link.reporter, asyncio.sleep)
 
 
-async def run_session(host: Host, backend: AudioBackend, address: str | None) -> None:
-    await host.start()
+async def run_session(host: Host, backend: AudioBackend, session: Session) -> None:
+    """Start the radio, pair when there is no address, then run both pipelines and `serve`.
+
+    `session.make_backend` builds a fresh backend for a lost audio device; without it a restart reuses `backend`.
+    """
+    from podbridge import pairing, radio, supervise
+
+    reporter, address, make_backend = session.reporter, session.address, session.make_backend
+    await radio.start_radio(host, reporter)
     if address is None:
-        print("Hold the AirPods case button until they pair.")
-        connection = await host.pair()
+        connection = await pairing.pair_with_hint(host, reporter)
+        if connection is None:
+            await host.close()
+            return
         address = connection.peer_address.to_string(False)
         save_address(address)
     queue: asyncio.Queue = asyncio.Queue()
     print(DISCORD_HINT)
+    current = [backend]
+
+    def reopen() -> None:
+        if make_backend is not None:
+            current.append(make_backend())
+
     pipelines = [
-        asyncio.create_task(output_pipeline(backend, lambda: host.source)),
-        asyncio.create_task(mic_pipeline(queue, MicDecoder(), backend)),
+        supervise.Pipeline("output", lambda: output_pipeline(current[-1], lambda: host.source), reopen),
+        supervise.Pipeline("mic", lambda: mic_pipeline(queue, MicDecoder(), current[-1]), reopen),
     ]
+    tasks = [asyncio.create_task(supervise.supervise(p, reporter)) for p in pipelines]
+    tasks.append(asyncio.create_task(serve(host, address, Link(queue, reporter))))
     try:
-        await serve(host, address, queue)
+        done, _ = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+        for task in done:
+            task.result()
     finally:
-        for task in pipelines:
+        for task in tasks:
             task.cancel()
+        for spare in current[1:]:
+            spare.close()
         await host.close()
 
 
 def run(args, machine=None) -> int:
-    from podbridge import doctor, winusb
+    from podbridge import crash, doctor, firmware_watch, winusb
     from podbridge.audio_io import PyAudioWPatchBackend
 
     machine = machine or winusb.Machine()
+    reporter = ConsoleReporter()
+    pending = crash.restore_pending(machine.state_path) if hasattr(machine, "state_path") else None
+    if pending:
+        reporter.emit(pending)
     ctx = doctor.Context(args=args, machine=machine)
     if not asyncio.run(doctor.run_stages(doctor.PREFLIGHT, ctx, quiet=True)):
         return 1
@@ -184,13 +220,20 @@ def run(args, machine=None) -> int:
             file=sys.stderr,
         )
         return 1
+    handler = firmware_watch.install(reporter)
     try:
         with winusb.bound(vid, pid, machine), muted_default_output(backend, args.output_source):
             host = Host(f"usb:{vid:04X}:{pid:04X}")
-            asyncio.run(run_session(host, backend, getattr(args, "address", None) or saved_address()))
+            address = getattr(args, "address", None) or saved_address()
+            asyncio.run(run_session(host, backend, Session(address, reporter, lambda: PyAudioWPatchBackend(output_source=args.output_source))))
     except KeyboardInterrupt:
         pass
+    except Exception as exc:
+        reporter.emit(crash.describe(exc))
+        crash.write_log(exc)
+        return 1
     finally:
+        firmware_watch.remove(handler)
         backend.close()
     return 0
 

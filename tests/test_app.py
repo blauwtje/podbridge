@@ -129,7 +129,7 @@ def test_run_passes_output_source_to_backend(preflight_usb_only, monkeypatch):
     def fake_bound(vid, pid, machine=None):
         yield machine
 
-    async def session(host, backend, address):
+    async def session(host, backend, *rest):
         pass
 
     monkeypatch.setattr(winusb, "bound", fake_bound)
@@ -155,7 +155,7 @@ def test_start_stream_retries_with_sbc():
     assert host.codec == "sbc" and host.source.encoder.codec == "sbc"
 
 
-def test_run_restores_driver_around_session(preflight_usb_only, monkeypatch):
+def test_run_restores_driver_around_session(preflight_usb_only, monkeypatch, capsys):
     from contextlib import contextmanager
 
     from podbridge import audio_io, winusb
@@ -170,7 +170,7 @@ def test_run_restores_driver_around_session(preflight_usb_only, monkeypatch):
         finally:
             events.append("restore")
 
-    async def failing_session(host, backend, address):
+    async def failing_session(host, backend, *rest):
         events.append("session")
         raise RuntimeError("boom")
 
@@ -178,9 +178,9 @@ def test_run_restores_driver_around_session(preflight_usb_only, monkeypatch):
     monkeypatch.setattr(audio_io, "PyAudioWPatchBackend", lambda output_source=None: FakeBackend())
     monkeypatch.setattr(app, "run_session", failing_session)
     args = types.SimpleNamespace(transport="usb:0bda:887b", output_source="x", address="AA:BB:CC:DD:EE:FF")
-    with pytest.raises(RuntimeError):
-        app.run(args, machine=object())
+    assert app.run(args, machine=object()) == 1
     assert events == [("bind", 0x0BDA, 0x887B), "session", "restore"]
+    assert "Unexpected error: boom" in capsys.readouterr().err
 
 
 def test_run_reports_a_backend_that_cannot_open(preflight_usb_only, monkeypatch, capsys):
@@ -227,7 +227,7 @@ def test_run_prints_nothing_when_the_preflight_passes(preflight_usb_only, monkey
     def fake_bound(vid, pid, machine=None):
         yield machine
 
-    async def session(host, backend, address):
+    async def session(host, backend, *rest):
         pass
 
     monkeypatch.setattr(winusb, "bound", fake_bound)
@@ -264,3 +264,51 @@ def test_discord_hint_names_input_output_and_devices_to_ignore():
     assert '"CABLE Output"' in app.DISCORD_HINT
     assert '"Default"' in app.DISCORD_HINT
     assert "CABLE Input" in app.DISCORD_HINT and "CABLE In 16ch" in app.DISCORD_HINT
+
+
+def test_serve_retries_through_retry_serve_with_bonded_connect(monkeypatch):
+    from podbridge import bond, retry
+
+    seen = {}
+
+    async def fake_retry(once, reporter, sleep):
+        seen["once"] = once
+        seen["reporter"] = reporter
+
+    async def fake_connect(host_, address, reporter):
+        seen["connect"] = (host_, address, reporter)
+        raise ConnectionError("stop")
+
+    monkeypatch.setattr(retry, "retry_serve", fake_retry)
+    monkeypatch.setattr(bond, "connect_bonded", fake_connect)
+    reporter = object()
+
+    async def go():
+        await app.serve("host", "AA", app.Link(asyncio.Queue(), reporter))
+        with pytest.raises(ConnectionError):
+            await seen["once"]()
+
+    asyncio.run(go())
+    assert seen["reporter"] is reporter
+    assert seen["connect"] == ("host", "AA", reporter)
+
+
+def test_run_session_stops_when_pairing_times_out(monkeypatch):
+    from podbridge import pairing, radio
+
+    calls = []
+
+    class H:
+        async def close(self):
+            calls.append("close")
+
+    async def start(host, reporter, **kw):
+        calls.append("radio")
+
+    async def pair(host, reporter, *rest):
+        return None
+
+    monkeypatch.setattr(radio, "start_radio", start)
+    monkeypatch.setattr(pairing, "pair_with_hint", pair)
+    asyncio.run(app.run_session(H(), FakeBackend(), app.Session(None, object())))
+    assert calls == ["radio", "close"]
