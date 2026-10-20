@@ -1,6 +1,7 @@
 """Audio capture, playback and endpoint mute behind one backend protocol."""
 import atexit
 import json
+import logging
 import os
 import threading
 import time
@@ -12,6 +13,7 @@ from typing import Iterator, Protocol
 
 from podbridge import winusb
 
+log = logging.getLogger("podbridge")
 CABLE_PLAYBACK = "CABLE Input"
 RATE = 48000
 CENTER_GAIN = 0.707
@@ -86,9 +88,10 @@ def muted_default_output(backend: AudioBackend, output_source: str | None = None
     if output_source:
         yield
         return
-    prior = saved_mute(state_path)
-    if prior is None:
-        prior = backend.get_mute()
+    saved = saved_mute(state_path)
+    prior = saved if saved is not None else backend.get_mute()
+    log.info("mute: endpoint %r, saved-file value %s, prior value %s", backend.render_name(), saved, prior)
+    if saved is None:
         save_mute(state_path, prior)
     restored = False
     lock = threading.Lock()
@@ -98,6 +101,7 @@ def muted_default_output(backend: AudioBackend, output_source: str | None = None
         with lock:
             if not restored:
                 backend.set_mute(prior)
+                log.info("mute: restored to %s", prior)
                 restored = True
                 if state_path is not None:
                     state_path.unlink(missing_ok=True)
@@ -106,6 +110,7 @@ def muted_default_output(backend: AudioBackend, output_source: str | None = None
     handler = winusb.install_close_handler(restore)
     try:
         backend.set_mute(True)
+        log.info("mute: set_mute(True) ran")
         yield
     finally:
         winusb.remove_close_handler(handler)
@@ -241,6 +246,7 @@ class PyAudioWPatchBackend:
         self._in = None
         self._out: dict[str, object] = {}
         self._carry: list = [None, None]
+        self.silent_timeouts = 0
         try:
             self._loopback = self._loopback_device(output_source)
             self._endpoint_id = None if output_source else self._default_endpoint_id()
@@ -277,6 +283,7 @@ class PyAudioWPatchBackend:
         dev = self._loopback
         rate, channels = int(dev["defaultSampleRate"]), dev["maxInputChannels"]
         if self._in is None:
+            log.info("loopback input opens: %r, %d Hz, %d channels", dev["name"], rate, channels)
             self._in = self._pa.open(
                 format=self._pa.get_format_from_width(2),
                 channels=channels,
@@ -288,6 +295,7 @@ class PyAudioWPatchBackend:
         deadline = time.monotonic() + LOOPBACK_WAIT_S
         while self._in.get_read_available() < need:
             if time.monotonic() >= deadline:
+                self.silent_timeouts += 1
                 return bytes(frames * 4)
             time.sleep(0.01)
         raw = self._in.read(need)

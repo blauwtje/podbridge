@@ -1,6 +1,7 @@
 """AAP mic session: open the channel, send the start sequence, queue access units (Decision 9)."""
 
 import asyncio
+import logging
 import time
 
 from bumble import l2cap
@@ -9,7 +10,10 @@ from bumble.core import BaseBumbleError
 from podbridge import aap, aap_inbound
 from podbridge.events import Event
 
+log = logging.getLogger("podbridge")
 SETTLE_S = 1.5
+DROP_LOG_FIRST = 50
+DROP_COUNT_S = 30.0
 OPEN_RETRIES = 3
 OPEN_RETRY_S = 3.0
 COMMAND_GAP_S = 0.3
@@ -45,6 +49,8 @@ class AapSession:
         self._silent_reported = False
         self._last_frame = 0.0
         self._last_start = 0.0
+        self._drops = 0
+        self._drop_count_at = 0.0
 
     async def _try_open(self):
         try:
@@ -72,12 +78,28 @@ class AapSession:
             self.frames_seen += 1
             self.queue.put_nowait(unit)
 
+    def _dropped(self, frame: bytes) -> None:
+        """Log an SDU nothing consumed: the first DROP_LOG_FIRST as hex, then a count every DROP_COUNT_S."""
+        self._drops += 1
+        if self._drops <= DROP_LOG_FIRST:
+            log.info("dropped inbound SDU %s", frame.hex())
+            return
+        now = self.clock()
+        if now - self._drop_count_at >= DROP_COUNT_S:
+            self._drop_count_at = now
+            log.info("dropped inbound SDUs so far: %d", self._drops)
+
     def _on_control(self, frame: bytes) -> None:
+        if frame[4:6] == b"\x09\x00":
+            log.info("control frame %s", frame.hex())
         if self.on_event is None:
+            self._dropped(frame)
             return
         events = aap_inbound.parse(frame)
         if events is None:
             events = [frame] if aap.parse_control(frame) else []
+        if not events:
+            self._dropped(frame)
         for event in events:
             self.on_event(event)
 

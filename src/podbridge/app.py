@@ -7,6 +7,7 @@ import sys
 import time
 import urllib.request
 from array import array
+from contextlib import contextmanager
 from typing import Callable, NamedTuple
 
 from podbridge import crash, paths
@@ -37,6 +38,9 @@ FIRMWARE_SHA256 = "f1e0427317f147a78606ede85f3f8977ed0ab85c41c6b525560e5bd5a51e5
 FIRMWARE_MAGIC = b"Realtech"
 FIRMWARE_V2_MAGIC = b"RTBTCore"
 DOWNLOAD_TIMEOUT_S = 60
+STATS_S = 10.0
+SESSION_LOG = "session.log"
+LOG_FORMAT = "%(asctime)s.%(msecs)03d %(name)s [%(threadName)s] %(message)s"
 log = logging.getLogger("podbridge")
 DISCORD_HINT = (
     "In Discord set:\n"
@@ -59,6 +63,7 @@ class SafeReporter:
         self.inner = inner
 
     def emit(self, event) -> None:
+        log.info("event %s: %s", event.kind, event.message)
         try:
             self.inner.emit(event)
         except Exception:
@@ -102,6 +107,7 @@ class Session(NamedTuple):
 
 def step(reporter, name, status) -> None:
     """Tell the reporter a run step changed; a console reporter has no steps."""
+    log.info("step %s %s", name, status)
     setter = getattr(reporter, "set_step", None)
     if setter is not None:
         setter(name, status)
@@ -119,18 +125,48 @@ async def output_pipeline(backend: AudioBackend, current_source: Callable[[], En
     """Loopback capture to the encoder to the A2DP packet queue, until cancelled.
 
     `current_source` is asked per frame: the SBC fallback swaps `host.source` mid-session.
+    A stats line every STATS_S shows where audio stops: reads, silent timeouts, peak level, fed source.
     """
+    reads, peak, source, last = 0, 0, None, time.monotonic()
     while True:
         pcm = await asyncio.to_thread(backend.read_loopback, LOOPBACK_FRAMES)
-        current_source().feed(pcm)
+        source = current_source()
+        reads += 1
+        samples = array("h")
+        samples.frombytes(pcm[: len(pcm) // 2 * 2])
+        if samples:
+            peak = max(peak, max(samples), -min(samples))
+        try:
+            source.feed(pcm)
+        except Exception:
+            log.exception("feed failed on %s#%s", type(source).__name__, id(source))
+            raise
+        now = time.monotonic()
+        if now - last >= STATS_S:
+            log.info(
+                "output stats: frames=%d silent_reads=%d peak=%d source=%s#%d current_source_none=%s",
+                reads * LOOPBACK_FRAMES, getattr(backend, "silent_timeouts", 0), peak,
+                type(source).__name__, id(source), source is None,
+            )
+            reads, peak, last = 0, 0, now
 
 
 async def mic_pipeline(queue: asyncio.Queue, decoder: MicDecoder, backend: AudioBackend) -> None:
     """AAP access units to the decoder to VB-CABLE, until cancelled."""
+    units = decoded = writes = 0
+    last = time.monotonic()
     while True:
         samples = decoder.decode(await queue.get())
+        units += 1
+        decoded += len(samples or ())
         if samples:
             await asyncio.to_thread(backend.write_playback, mono_to_stereo(samples), CABLE_PLAYBACK)
+            writes += 1
+        now = time.monotonic()
+        if now - last >= STATS_S:
+            log.info("mic stats: access_units=%d decoded_samples=%d cable_writes=%d", units, decoded, writes)
+            units = decoded = writes = 0
+            last = now
 
 
 def device_file():
@@ -200,6 +236,7 @@ async def serve_connection(host: Host, connection, disconnected: asyncio.Future,
     from podbridge import settings
 
     await host.stream(connection)
+    log.info("A2DP streaming with %s", getattr(host, "codec", "?"))
     step(link.reporter, "connecting", "done")
     step(link.reporter, "connected", "done")
     state = link.settings or settings.SettingsState()
@@ -326,7 +363,46 @@ def refuse(reporter, console: bool, message: str) -> int:
     return 1
 
 
+@contextmanager
+def session_log():
+    """Log INFO lines of the "podbridge" logger to session.log, overwritten each run; never stops the run."""
+    logger = log
+    handler = None
+    try:
+        path = paths.appdata_dir() / SESSION_LOG
+        path.parent.mkdir(parents=True, exist_ok=True)
+        handler = logging.FileHandler(path, mode="w", encoding="utf-8")  # flushes after every line
+        handler.setLevel(logging.INFO)
+        handler.setFormatter(logging.Formatter(LOG_FORMAT, "%Y-%m-%d %H:%M:%S"))
+    except OSError as exc:
+        print(f"podbridge: cannot write {SESSION_LOG}: {exc}", file=sys.stderr)
+    level = logger.level
+    if handler is not None:
+        # why: with no other handler Python prints warnings to stderr; keep that once ours is attached
+        if not logger.hasHandlers():
+            logger.addHandler(stderr := logging.StreamHandler())
+            stderr.setLevel(logging.WARNING)
+        else:
+            stderr = None
+        logger.addHandler(handler)
+        logger.setLevel(min(level or logging.INFO, logging.INFO))
+    try:
+        yield
+    finally:
+        if handler is not None:
+            logger.removeHandler(handler)
+            handler.close()
+            if stderr is not None:
+                logger.removeHandler(stderr)
+            logger.setLevel(level)
+
+
 def run(args, machine=None, reporter=None) -> int:
+    with session_log():
+        return _run(args, machine, reporter)
+
+
+def _run(args, machine=None, reporter=None) -> int:
     from podbridge import doctor, firmware_watch, radio, winusb
     from podbridge.audio_io import PyAudioWPatchBackend
 

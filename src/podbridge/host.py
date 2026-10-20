@@ -3,6 +3,7 @@ import asyncio
 import copy
 import logging
 import os
+import time
 
 from bumble import a2dp, avdtp, core, hci, l2cap, sdp
 from bumble.device import Device
@@ -20,6 +21,7 @@ DEVICE_ID_HANDLE = 0x10002
 ADTS_HEADER_SIZE = 7
 SBC_BITPOOL = 53
 PACKET_QUEUE = 64
+STATS_S = 10.0
 log = logging.getLogger("podbridge")
 _BT_SIG_SOURCE = 1
 _DID_VERSION = 0x0100
@@ -146,6 +148,8 @@ class EncodedPacketSource:
         self._queue: asyncio.Queue = asyncio.Queue(PACKET_QUEUE)
         self._sequence = 0
         self._samples = 0
+        self.fed = self.sent = 0
+        self._stats_at = time.monotonic()
 
     def feed(self, pcm: bytes) -> None:
         """Queue the frames of one PCM block; the oldest packet is dropped when the queue is full."""
@@ -153,6 +157,11 @@ class EncodedPacketSource:
             if self._queue.full():
                 self._queue.get_nowait()
             self._queue.put_nowait(frame)
+            self.fed += 1
+        now = time.monotonic()
+        if now - self._stats_at >= STATS_S:
+            self._stats_at = now
+            log.info("A2DP packets: fed=%d sent=%d queued=%d", self.fed, self.sent, self._queue.qsize())
 
     def _packet(self, frame: bytes) -> avdtp.MediaPacket:
         if self.encoder.codec == "aac":
@@ -176,7 +185,9 @@ class EncodedPacketSource:
     def packets(self):
         async def generate():
             while True:
-                yield self._packet(await self._queue.get())
+                packet = self._packet(await self._queue.get())
+                self.sent += 1
+                yield packet
 
         return generate()
 
@@ -315,8 +326,10 @@ class Host:
             raise RuntimeError(f"peer has no {self.codec} sink")
         pump = avdtp.MediaPacketPump(self.source.packets)
         local = protocol.add_source(codec_capabilities(self.codec), pump)
+        log.info("A2DP configuring %s, source %s#%d", self.codec, type(self.source).__name__, id(self.source))
         stream = await protocol.create_stream(local, sink)
         await stream.start()
+        log.info("A2DP stream started (%s)", self.codec)
         return stream
 
     async def close(self) -> None:
