@@ -276,6 +276,65 @@ def test_transport_stage_records_which_usb_interface_claim_failed(monkeypatch, c
     assert usb1.USBDeviceHandle.claimInterface is original
 
 
+def test_transport_stage_pass_keeps_a_usb_claim_that_failed_and_was_recovered(monkeypatch, capsys):
+    import usb1
+
+    from podbridge import host, radio
+
+    class SlowThenUp:
+        starts = 0
+
+        def __init__(self, name):
+            pass
+
+        async def start(self):
+            SlowThenUp.starts += 1
+            if SlowThenUp.starts == 1:
+                await asyncio.sleep(10)
+            return object()
+
+        async def close(self):
+            pass
+
+    def claim(handle, interface):
+        raise usb1.USBErrorBusy()
+
+    def reset():
+        usb1.USBDeviceHandle.claimInterface(None, 0)
+
+    monkeypatch.setattr(host, "Host", SlowThenUp)
+    monkeypatch.setattr(usb1.USBDeviceHandle, "claimInterface", claim)
+    monkeypatch.setattr(radio, "recovery_steps", lambda machine, vid, pid: [("resetting it", reset), ("restarting it", lambda: None)])
+    ctx = doctor.Context(machine=object(), vid=0x0BDA, pid=0x887B, radio_timeout=0.05)
+    assert run([doctor.bumble_transport], ctx) is True
+    passed = [line for line in capsys.readouterr().out.splitlines() if line.startswith("PASS")]
+    assert len(passed) == 1
+    assert "claimInterface(0) USBErrorBusy" in passed[0]
+
+
+def test_transport_stage_pass_without_a_failed_claim_lists_no_usb_calls(monkeypatch, capsys):
+    import usb1
+
+    from podbridge import host
+
+    class Claiming:
+        def __init__(self, name):
+            pass
+
+        async def start(self):
+            usb1.USBDeviceHandle.claimInterface(None, 0)
+            return object()
+
+        async def close(self):
+            pass
+
+    monkeypatch.setattr(host, "Host", Claiming)
+    monkeypatch.setattr(usb1.USBDeviceHandle, "claimInterface", lambda handle, interface: None)
+    ctx = doctor.Context(machine=object(), vid=0x0BDA, pid=0x887B, radio_timeout=0.05)
+    assert run([doctor.bumble_transport], ctx) is True
+    assert "USB calls" not in capsys.readouterr().out
+
+
 def test_second_instance_is_not_told_to_run_restore(capsys):
     from podbridge import winusb
 
