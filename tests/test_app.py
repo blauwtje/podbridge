@@ -969,3 +969,19 @@ def test_output_pipeline_logs_a_stats_line(monkeypatch, caplog):
     line = next(r.getMessage() for r in caplog.records if "output stats" in r.getMessage())
     assert "frames=" in line and "silent_reads=0" in line and "peak=" in line
     assert f"EncodedPacketSource#{id(source)}" in line and "current_source_none=False" in line
+
+
+def test_session_log_keeps_bumble_signalling_but_not_rtp_packets(monkeypatch, tmp_path):
+    import logging
+
+    monkeypatch.setattr(paths, "appdata_dir", lambda: tmp_path)
+    avdtp_log = logging.getLogger("bumble.avdtp")
+    before = avdtp_log.level
+    with app.session_log():
+        avdtp_log.debug("<<< Suspend_Command seen")
+        avdtp_log.debug(">>> sending RTP packet: x")
+        logging.getLogger("podbridge").debug("podbridge debug")
+    text = (tmp_path / app.SESSION_LOG).read_text(encoding="utf-8")
+    assert "Suspend_Command seen" in text
+    assert "RTP packet" not in text and "podbridge debug" not in text
+    assert avdtp_log.level == before and not avdtp_log.handlers

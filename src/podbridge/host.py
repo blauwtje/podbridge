@@ -140,6 +140,12 @@ def codec_capabilities(codec: str) -> avdtp.MediaCodecCapabilities:
     return avdtp.MediaCodecCapabilities(avdtp.AVDTP_AUDIO_MEDIA_TYPE, codec_type, info)
 
 
+def log_stream_events(local, codec: str) -> None:
+    """Log the peer's AVDTP SUSPEND and START commands, which stop and restart the pump."""
+    local.on(local.EVENT_SUSPEND, lambda: log.info("A2DP stream suspended by the peer (%s)", codec))
+    local.on(local.EVENT_START, lambda: log.info("A2DP stream started again by the peer (%s)", codec))
+
+
 class EncodedPacketSource:
     """`feed(pcm)` encodes and queues RTP packets; `packets` is the generator Bumble's pump reads."""
 
@@ -182,11 +188,24 @@ class EncodedPacketSource:
         return packet
 
     @property
-    def packets(self):
+    def packets(self) -> "_PacketStream":
+        return _PacketStream(self)
+
+
+class _PacketStream:
+    """Async iterable over the source's queue; each iteration (each pump start) gets a fresh generator."""
+
+    def __init__(self, source: EncodedPacketSource):
+        self._source = source
+
+    def __aiter__(self):
+        # why: Bumble cancels the pump on SUSPEND, which closes the generator; START must not reuse it
+        source = self._source
+
         async def generate():
             while True:
-                packet = self._packet(await self._queue.get())
-                self.sent += 1
+                packet = source._packet(await source._queue.get())
+                source.sent += 1
                 yield packet
 
         return generate()
@@ -326,6 +345,7 @@ class Host:
             raise RuntimeError(f"peer has no {self.codec} sink")
         pump = avdtp.MediaPacketPump(self.source.packets)
         local = protocol.add_source(codec_capabilities(self.codec), pump)
+        log_stream_events(local, self.codec)
         log.info("A2DP configuring %s, source %s#%d", self.codec, type(self.source).__name__, id(self.source))
         stream = await protocol.create_stream(local, sink)
         await stream.start()

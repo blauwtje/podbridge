@@ -1,6 +1,7 @@
 import asyncio
 
 from bumble import avdtp
+from pyee import EventEmitter
 
 from podbridge.a2dp_encoder import A2dpEncoder
 from podbridge.host import EncodedPacketSource
@@ -38,3 +39,18 @@ def test_pump_sends_again_after_suspend_then_start():
     before, total = asyncio.run(main())
     assert before > 0
     assert total - before > 0, "no packets after SUSPEND then START"
+
+
+def test_suspend_and_start_events_are_logged(caplog):
+    import logging
+
+    from podbridge import host
+
+    caplog.set_level(logging.INFO, logger="podbridge")
+    local = avdtp.LocalSource.__new__(avdtp.LocalSource)
+    EventEmitter.__init__(local)
+    host.log_stream_events(local, "aac")
+    local.emit(local.EVENT_SUSPEND)
+    local.emit(local.EVENT_START)
+    text = caplog.text
+    assert "suspended" in text and "started again" in text

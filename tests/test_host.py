@@ -4,6 +4,7 @@ import os
 import struct
 
 import pytest
+from pyee import EventEmitter
 from bumble import a2dp, avdtp, core, sdp, utils
 from bumble.keys import PairingKeys
 
@@ -11,6 +12,14 @@ from podbridge import host, paths
 from podbridge.a2dp_encoder import A2dpEncoder
 
 HFP_HSP = {0x1108, 0x1112, 0x111E, 0x111F}
+
+
+class FakeLocal(EventEmitter):
+    EVENT_START, EVENT_SUSPEND = "start", "suspend"
+
+    def __init__(self, codec_type, pump):
+        super().__init__()
+        self.codec_type, self.pump = codec_type, pump
 
 
 class Null:
@@ -82,7 +91,7 @@ def test_encoder_output_becomes_rtp_packets(codec):
     async def run():
         source = host.EncodedPacketSource(A2dpEncoder(codec))
         source.feed(tone())
-        gen = source.packets
+        gen = aiter(source.packets)
         return [await asyncio.wait_for(gen.__anext__(), 1) for _ in range(3)]
 
     packets = asyncio.run(run())
@@ -119,10 +128,10 @@ class FakeProtocol:
         return codec_type
 
     def add_source(self, capabilities, pump):
-        return capabilities.media_codec_type, pump
+        return FakeLocal(capabilities.media_codec_type, pump)
 
     async def create_stream(self, local, sink):
-        codec_type, pump = local
+        codec_type, pump = local.codec_type, local.pump
         assert codec_type == sink
         if codec_type in self.rejects:
             raise avdtp.ProtocolError(0x29, "avdtp")  # UNSUPPORTED_CONFIGURATION

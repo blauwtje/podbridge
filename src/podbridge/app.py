@@ -363,6 +363,18 @@ def refuse(reporter, console: bool, message: str) -> int:
     return 1
 
 
+BUMBLE_LOGGERS = ("bumble.avdtp", "bumble.a2dp")
+
+
+class _SessionFilter(logging.Filter):
+    """Podbridge lines from INFO up; Bumble lines at any level, except the per-packet ones."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        if record.name.startswith("bumble"):
+            return "RTP packet" not in record.getMessage()
+        return record.levelno >= logging.INFO
+
+
 @contextmanager
 def session_log():
     """Log INFO lines of the "podbridge" logger to session.log, overwritten each run; never stops the run."""
@@ -372,11 +384,13 @@ def session_log():
         path = paths.appdata_dir() / SESSION_LOG
         path.parent.mkdir(parents=True, exist_ok=True)
         handler = logging.FileHandler(path, mode="w", encoding="utf-8")  # flushes after every line
-        handler.setLevel(logging.INFO)
+        handler.setLevel(logging.DEBUG)
+        handler.addFilter(_SessionFilter())
         handler.setFormatter(logging.Formatter(LOG_FORMAT, "%Y-%m-%d %H:%M:%S"))
     except OSError as exc:
         print(f"podbridge: cannot write {SESSION_LOG}: {exc}", file=sys.stderr)
     level = logger.level
+    bumble_levels: dict[str, int] = {}
     if handler is not None:
         # why: with no other handler Python prints warnings to stderr; keep that once ours is attached
         if not logger.hasHandlers():
@@ -386,9 +400,18 @@ def session_log():
             stderr = None
         logger.addHandler(handler)
         logger.setLevel(min(level or logging.INFO, logging.INFO))
+        for name in BUMBLE_LOGGERS:
+            bumble = logging.getLogger(name)
+            bumble_levels[name] = bumble.level
+            bumble.addHandler(handler)
+            bumble.setLevel(logging.DEBUG)
     try:
         yield
     finally:
+        for name, bumble_level in bumble_levels.items():
+            bumble = logging.getLogger(name)
+            bumble.removeHandler(handler)
+            bumble.setLevel(bumble_level)
         if handler is not None:
             logger.removeHandler(handler)
             handler.close()
