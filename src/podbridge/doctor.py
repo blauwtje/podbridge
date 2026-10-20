@@ -2,6 +2,8 @@
 import asyncio
 import ctypes
 import json
+import logging
+import re
 from contextlib import AsyncExitStack
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -89,7 +91,41 @@ async def winusb_bind(ctx: Context) -> None:
         raise StageFailed(f"{exc}; run podbridge restore") from exc
 
 
-async def bumble_transport(ctx: Context) -> None:
+class _Subversions(logging.Handler):
+    """Keep the LMP and HCI subversion Bumble's Realtek driver logs when it probes the chip, before the patch."""
+
+    PROBE = re.compile(r"looking for a driver: 0x([0-9A-F]+) \(0x[0-9A-F]+, 0x([0-9A-F]+)\)")
+
+    def __init__(self):
+        super().__init__(logging.DEBUG)
+        self.found = None
+
+    def emit(self, record):
+        match = self.PROBE.search(record.getMessage())
+        if match:
+            self.found = (int(match[1], 16), int(match[2], 16))
+
+
+async def subversions_line(device, before) -> str:
+    """The LMP and HCI subversion before the firmware patch (None: not probed) and now, after it."""
+    from bumble import hci
+
+    try:
+        version = await device.host.send_sync_command(hci.HCI_Read_Local_Version_Information_Command())
+        after = (version.lmp_subversion, version.hci_subversion)
+    except Exception:
+        after = None
+
+    def show(pair, index, width):
+        return "unknown" if pair is None else f"0x{pair[index]:0{width}X}"
+
+    return ", ".join(
+        f"{name} before={show(before, index, width)} after={show(after, index, width)}"
+        for index, name, width in ((0, "lmp_subversion", 4), (1, "hci_subversion", 4))
+    )
+
+
+async def bumble_transport(ctx: Context) -> str:
     """Bumble transport and firmware load"""
     from podbridge import radio
     from podbridge.events import ConsoleReporter
@@ -98,12 +134,20 @@ async def bumble_transport(ctx: Context) -> None:
     ctx.host = Host(f"usb:{ctx.vid:04X}:{ctx.pid:04X}")
     ctx.stack.push_async_callback(ctx.host.close)
     recover = radio.recovery_steps(ctx.machine, ctx.vid, ctx.pid)
+    probe, driver_log = _Subversions(), logging.getLogger("bumble.drivers.rtk")
+    level = driver_log.level
+    driver_log.addHandler(probe)
+    driver_log.setLevel(logging.DEBUG)
     try:
-        await radio.start_radio(ctx.host, ConsoleReporter(), timeout=ctx.radio_timeout, recover=recover)
+        device = await radio.start_radio(ctx.host, ConsoleReporter(), timeout=ctx.radio_timeout, recover=recover)
     except radio.RadioError as exc:
         raise StageFailed(f"{exc}; {exc.next_step}") from exc
     except Exception as exc:
         raise StageFailed(f"{exc}; check the firmware files and that WinUSB is bound") from exc
+    finally:
+        driver_log.removeHandler(probe)
+        driver_log.setLevel(level)
+    return await subversions_line(device, probe.found)
 
 
 async def bond_present(ctx: Context) -> str:
