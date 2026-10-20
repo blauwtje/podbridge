@@ -255,3 +255,33 @@ def test_second_instance_is_not_told_to_run_restore(capsys):
     out = capsys.readouterr()
     assert "another podbridge is running" in out.out + out.err
     assert "podbridge restore" not in out.out + out.err
+
+
+def test_transport_stage_records_the_subversions_before_and_after_the_firmware_patch(monkeypatch, capsys):
+    import logging
+    from types import SimpleNamespace
+
+    from podbridge import host, radio
+
+    class Patched:
+        def __init__(self, name):
+            after = SimpleNamespace(lmp_subversion=0x8761, hci_subversion=0x000C)
+
+            async def send_sync_command(command):
+                return after
+
+            self.device = SimpleNamespace(host=SimpleNamespace(send_sync_command=send_sync_command))
+
+        async def start(self):
+            logging.getLogger("bumble.drivers.rtk").debug("looking for a driver: 0x8761 (0x0A, 0x000B)")
+            return self.device
+
+        async def close(self):
+            pass
+
+    monkeypatch.setattr(host, "Host", Patched)
+    monkeypatch.setattr(radio, "recovery_steps", lambda machine, vid, pid: [])
+    ctx = doctor.Context(vid=0x0BDA, pid=0x887B)
+    assert run([doctor.bumble_transport], ctx) is True
+    out = capsys.readouterr().out
+    assert "lmp_subversion before=0x8761 after=0x8761, hci_subversion before=0x000B after=0x000C" in out
