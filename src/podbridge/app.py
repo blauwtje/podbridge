@@ -10,7 +10,6 @@ from array import array
 from typing import Callable, NamedTuple
 
 from podbridge import crash, paths
-from podbridge.a2dp_encoder import A2dpEncoder
 from podbridge.aap_session import AapSession
 from podbridge.events import ConsoleReporter, Event
 from podbridge.audio_io import CABLE_PLAYBACK, AudioBackend, muted_default_output
@@ -21,6 +20,7 @@ LOOPBACK_FRAMES = 960
 RECONNECT_S = 3.0
 TICK_S = 0.5
 WRITE_TIMEOUT_S = 5.0
+DISCONNECT_TIMEOUT_S = 5.0
 RESTORE_NOTE = "restoring the driver also failed"  # the note winusb.bound adds
 USB_CANDIDATES = ((0x13D3, 0x3571), (0x0BDA, 0x887B), (0x0CB8, 0xC559))
 FIRMWARE_BASE = "rtl8852bu"
@@ -171,26 +171,34 @@ def find_usb_ids(args, machine) -> tuple[int, int]:
     raise winusb.DriverError("no Realtek 8852BE Bluetooth USB device found; pass --transport usb:<vid>:<pid>")
 
 
-async def start_stream(host: Host, connection):
-    """AAC first; one retry with SBC when the AirPods reject the AAC configuration."""
-    try:
-        return await host.stream(connection)
-    except Exception:
-        if host.codec != "aac":
-            raise
-    host.codec = "sbc"
-    host.source = EncodedPacketSource(A2dpEncoder("sbc"))
-    return await host.stream(connection)
-
-
 async def serve_once(host: Host, address: str, link: Link) -> None:
-    from podbridge import bond, settings
+    from podbridge import bond
 
     step(link.reporter, "connecting", "active")
     connection = await bond.connect_bonded(host, address, link.reporter)
     disconnected = asyncio.get_running_loop().create_future()
     connection.on("disconnection", lambda *_: disconnected.done() or disconnected.set_result(None))
-    await start_stream(host, connection)
+    try:
+        await serve_connection(host, connection, disconnected, link)
+    finally:
+        # why: a link left up makes the next connect to this address fail with ACL_CONNECTION_ALREADY_EXISTS
+        if not disconnected.done():
+            await drop_link(connection)
+
+
+async def drop_link(connection) -> None:
+    """Disconnect an ACL we still hold; a failure is logged so the error that ended the session stays the one raised."""
+    try:
+        await asyncio.wait_for(connection.disconnect(), DISCONNECT_TIMEOUT_S)
+    except Exception as exc:
+        log.warning("could not disconnect the AirPods link: %r", exc)
+
+
+async def serve_connection(host: Host, connection, disconnected: asyncio.Future, link: Link) -> None:
+    """Stream A2DP, then run the AAP session until it ends or the peer drops the link."""
+    from podbridge import settings
+
+    await host.stream(connection)
     step(link.reporter, "connecting", "done")
     step(link.reporter, "connected", "active")
     state = link.settings or settings.SettingsState()

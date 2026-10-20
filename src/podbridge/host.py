@@ -1,5 +1,6 @@
 """One Bumble host: pairs with the AirPods, keeps the bond and streams A2DP from the encoder."""
 import asyncio
+import logging
 import os
 
 from bumble import a2dp, avdtp, core, hci, sdp
@@ -16,6 +17,7 @@ DEVICE_ID_HANDLE = 0x10002
 ADTS_HEADER_SIZE = 7
 SBC_BITPOOL = 53
 PACKET_QUEUE = 64
+log = logging.getLogger("podbridge")
 _BT_SIG_SOURCE = 1
 _DID_VERSION = 0x0100
 DID_SPECIFICATION_ID = 0x0200
@@ -182,12 +184,26 @@ class Host:
         return connection
 
     async def stream(self, connection) -> avdtp.Stream:
-        """Open AVDTP to the peer, pick the sink for our codec and start the stream."""
+        """Open AVDTP to the peer once and start the stream; AAC first, SBC on that protocol when AAC fails."""
         version = await avdtp.find_avdtp_service_with_connection(connection)
         if version is None:
             raise RuntimeError("peer has no AVDTP service")
+        # why: AVDTP allows one signaling channel per peer, so the SBC retry must reuse this protocol
         protocol = await avdtp.Protocol.connect(connection, version)
         await protocol.discover_remote_endpoints()
+        if self.codec != "aac":
+            return await self._start(protocol)
+        try:
+            return await self._start(protocol)
+        except Exception as exc:
+            # raised inside the handler so an SBC failure carries the AAC failure as its __context__
+            log.warning("AAC stream failed (%r); trying SBC on the same AVDTP connection", exc)
+            self.codec = "sbc"
+            self.source = EncodedPacketSource(A2dpEncoder("sbc"))
+            return await self._start(protocol)
+
+    async def _start(self, protocol: avdtp.Protocol) -> avdtp.Stream:
+        """Pick the peer's sink for our codec, configure a stream to it and start it."""
         codec_type = a2dp.A2DP_MPEG_2_4_AAC_CODEC_TYPE if self.codec == "aac" else a2dp.A2DP_SBC_CODEC_TYPE
         sink = protocol.find_remote_sink_by_codec(avdtp.AVDTP_AUDIO_MEDIA_TYPE, codec_type)
         if sink is None:

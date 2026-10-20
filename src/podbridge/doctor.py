@@ -121,11 +121,9 @@ async def bond_present(ctx: Context) -> str:
 
 async def codec_chosen(ctx: Context) -> str:
     """A2DP codec chosen"""
-    from podbridge import app
-
     try:
         ctx.connection = await ctx.host.connect(ctx.address)
-        await app.start_stream(ctx.host, ctx.connection)
+        await ctx.host.stream(ctx.connection)
     except Exception as exc:
         raise StageFailed(f"{exc or type(exc).__name__}; put the AirPods in the case, open it and retry") from exc
     return ctx.host.codec

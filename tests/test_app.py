@@ -140,21 +140,6 @@ def test_run_passes_output_source_to_backend(preflight_usb_only, monkeypatch):
     assert seen == ["Headset"]
 
 
-def test_start_stream_retries_with_sbc():
-    class FakeHost:
-        codec = "aac"
-        source = None
-
-        async def stream(self, connection):
-            if self.codec == "aac":
-                raise RuntimeError("rejected")
-            return "stream"
-
-    host = FakeHost()
-    assert asyncio.run(app.start_stream(host, None)) == "stream"
-    assert host.codec == "sbc" and host.source.encoder.codec == "sbc"
-
-
 def test_run_restores_driver_around_session(preflight_usb_only, monkeypatch, capsys):
     from contextlib import contextmanager
 
