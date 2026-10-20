@@ -27,14 +27,14 @@ $AppId = "{1D046C64-8CBA-456B-B0D9-752F8A4D01FF}"  # AppId in installer/podbridg
 $Repo = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 if (-not $PodbridgeArgs) { $PodbridgeArgs = @("run") }
 
-function Git {
+function Invoke-Git {
     $out = & git -C $Repo @args
     if ($LASTEXITCODE -ne 0) { throw "git $($args -join ' ') failed with exit code $LASTEXITCODE" }
     $out
 }
 
 function Find-PushRemote {
-    $push = @(Git remote -v | Where-Object { $_ -match '\(push\)$' } | ForEach-Object { ($_ -split '\s+')[0] } | Select-Object -Unique)
+    $push = @(Invoke-Git remote -v | Where-Object { $_ -match '\(push\)$' } | ForEach-Object { ($_ -split '\s+')[0] } | Select-Object -Unique)
     if ($push.Count -eq 1) { return $push[0] }
     if ($push -contains "origin") { return "origin" }
     throw "cannot pick a push remote from 'git remote -v' ($($push -join ', ')); pass -Remote <name>"
@@ -51,18 +51,18 @@ function Quote([string]$s) { "'" + $s.Replace("'", "''") + "'" }
 
 if (-not $NoPull) {
     $remote = if ($Remote) { $Remote } else { Find-PushRemote }
-    if (Git status --porcelain) { throw "$Repo has local changes; commit or discard them first, or pass -NoPull" }
-    $current = (Git branch --show-current)
+    if (Invoke-Git status --porcelain) { throw "$Repo has local changes; commit or discard them first, or pass -NoPull" }
+    $current = (Invoke-Git branch --show-current)
     $target = if ($Branch) { $Branch } else { $current }
     if (-not $target) { throw "HEAD is detached; pass -Branch <name>" }
     Write-Host "dev: fetching $remote"
-    Git fetch $remote | Out-Null
+    Invoke-Git fetch $remote | Out-Null
     if ($target -ne $current) {
         $local = & git -C $Repo rev-parse --verify --quiet "refs/heads/$target"
-        if ($local) { Git checkout $target | Out-Null } else { Git checkout -b $target --track "$remote/$target" | Out-Null }
+        if ($local) { Invoke-Git checkout $target | Out-Null } else { Invoke-Git checkout -b $target --track "$remote/$target" | Out-Null }
     }
-    Git merge --ff-only "$remote/$target" | Out-Null
-    Write-Host "dev: at $target $(Git rev-parse --short HEAD)"
+    Invoke-Git merge --ff-only "$remote/$target" | Out-Null
+    Write-Host "dev: at $target $(Invoke-Git rev-parse --short HEAD)"
 }
 
 Push-Location $Repo
