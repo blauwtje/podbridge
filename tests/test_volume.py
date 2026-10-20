@@ -5,7 +5,7 @@ from array import array
 
 import pytest
 
-from podbridge import app
+from podbridge import app, audio_io
 from podbridge.audio_io import FakeBackend, Volume, apply_gain, muted_default_output
 
 
@@ -144,3 +144,89 @@ def test_output_source_does_no_watching_and_the_gain_stays_full():
         time.sleep(0.35)
         assert volume.gain == 1.0
     assert b.reads == 0 and b.muted is False
+
+
+def test_a_volume_notification_wakes_the_watcher_before_the_poll(monkeypatch):
+    monkeypatch.setattr(audio_io, "VOLUME_POLL_S", 5.0)
+    b = FakeBackend(muted=False)
+    with muted_default_output(b) as volume:
+        assert until(lambda: b.muted is True)
+        time.sleep(0.1)  # the watcher is now waiting out its 5 s poll
+        b.muted = False
+        b.volume = 0.25
+        b.fire_volume_change()
+        assert until(lambda: b.muted is True and volume.gain == 0.25, timeout=0.5)
+
+
+def test_the_volume_notification_is_unregistered_before_the_prior_mute_is_restored():
+    seen = []
+
+    class Spy(FakeBackend):
+        def set_mute(self, muted):
+            if not muted:
+                seen.append(self.watching)
+            super().set_mute(muted)
+
+    b = Spy(muted=False)
+    with muted_default_output(b):
+        assert b.watching == 1
+    assert seen == [0]
+    assert b.watching == 0
+
+
+def test_a_failed_notification_registration_falls_back_to_polling_with_one_warning(caplog, monkeypatch):
+    monkeypatch.setattr(audio_io, "VOLUME_POLL_S", 0.02)
+
+    class NoCallback(FakeBackend):
+        def watch_volume(self, wake):
+            raise OSError("no callback")
+
+    b = NoCallback(muted=False)
+    with caplog.at_level(logging.INFO, logger="podbridge"):
+        with muted_default_output(b) as volume:
+            b.volume = 0.5
+            b.muted = False
+            assert until(lambda: volume.gain == 0.5 and b.muted is True)
+            time.sleep(0.1)
+    warnings_ = [r for r in caplog.records if r.levelno == logging.WARNING and "no callback" in str(r.exc_info)]
+    assert len(warnings_) == 1
+
+
+def test_gain_ramps_linearly_from_the_previous_gain_across_the_chunk():
+    frames = 960
+    out = samples(apply_gain(pcm([32767] * 2 * frames), 0.0, 1.0))
+    left, right = out[0::2], out[1::2]
+    assert left == right
+    assert left[0] >= 32767 * 0.99 and left[-1] == 0
+    assert all(a >= b for a, b in zip(left, left[1:]))
+    increment = 32767 / frames
+    assert max(a - b for a, b in zip(left, left[1:])) <= increment + 1
+    assert 32767 - left[0] <= increment + 1
+
+
+def test_a_constant_gain_is_a_plain_scale_and_gain_one_keeps_the_bytes():
+    raw = pcm([1000, -1000, 800, -800])
+    assert samples(apply_gain(raw, 0.5, 0.5)) == [500, -500, 400, -400]
+    assert apply_gain(raw, 1.0, 1.0) is raw
+
+
+def test_output_pipeline_ramps_across_a_gain_change_between_chunks():
+    fed = []
+    volume = Volume()
+
+    class Source:
+        def feed(self, data):
+            fed.append(data)
+            volume.gain = 0.0  # the slider drops to zero after the first chunk
+
+    async def go():
+        loud = pcm([32767] * 2 * app.LOOPBACK_FRAMES)
+        task = asyncio.create_task(app.output_pipeline(FakeBackend(loopback=loud * 2), lambda: Source(), volume))
+        while len(fed) < 2:
+            await asyncio.sleep(0.01)
+        task.cancel()
+
+    asyncio.run(go())
+    assert samples(fed[0])[0] == 32767
+    second = samples(fed[1])[0::2]
+    assert second[0] >= 32767 * 0.99 and second[-1] == 0

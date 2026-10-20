@@ -35,3 +35,9 @@ def test_the_aac_bit_rate_for_mtu_1023_fits_the_peak_frame_seen_in_a_real_run():
     # real run at 256 kbps: mean frame 683 bytes, largest packet 1256 bytes, so peak payload over mean is 1.79
     mean = aac_bit_rate_for_mtu(1023) * AAC_FRAME_SAMPLES / SAMPLE_RATE / 8
     assert mean * 1.79 + AAC_PACKET_OVERHEAD <= 1023
+
+
+def test_the_aac_bit_rate_for_mtu_1023_also_fits_the_2_02_peak_of_a_second_real_run():
+    # 195592 bit/s run: a 1059 byte packet over the peer MTU 1023, peak over mean 2.02
+    mean = aac_bit_rate_for_mtu(1023) * AAC_FRAME_SAMPLES / SAMPLE_RATE / 8
+    assert mean * 2.02 + AAC_PACKET_OVERHEAD <= 1023
