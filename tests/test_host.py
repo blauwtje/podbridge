@@ -4,7 +4,7 @@ import os
 import struct
 
 import pytest
-from bumble import a2dp, avdtp, core, sdp
+from bumble import a2dp, avdtp, core, sdp, utils
 from bumble.keys import PairingKeys
 
 from podbridge import host, paths
@@ -173,3 +173,140 @@ def test_stream_raises_the_sbc_error_with_the_aac_error_as_its_context(monkeypat
     with pytest.raises(avdtp.ProtocolError) as info:
         asyncio.run(h.stream("acl"))
     assert isinstance(info.value.__context__, avdtp.ProtocolError)
+
+
+AIRPODS = "AA:BB:CC:DD:EE:FF"
+PHONE = "11:22:33:44:55:66"
+
+
+class FakeLink:
+    def __init__(self, address, calls):
+        self.peer_address, self.calls = address, calls
+
+    async def authenticate(self):
+        self.calls.append(("authenticate", self.peer_address))
+
+    async def encrypt(self):
+        self.calls.append(("encrypt", self.peer_address))
+
+    async def disconnect(self, *args, **kwargs):
+        self.calls.append(("disconnect", self))
+
+
+class FakeRadio(utils.EventEmitter):
+    """A Bumble Device stand-in: inquiry answers with `found`, `accept` waits for `incoming`."""
+
+    def __init__(self, found=(), incoming=None):
+        super().__init__()
+        self.found, self.incoming, self.calls, self.discovering = list(found), incoming, [], False
+
+    async def set_discoverable(self, on):
+        self.calls.append(("discoverable", on))
+
+    async def set_connectable(self, on):
+        self.calls.append(("connectable", on))
+
+    async def start_discovery(self):
+        self.calls.append(("start_discovery",))
+        self.discovering = True
+        loop = asyncio.get_running_loop()
+        for address, name in self.found:
+            data = core.AdvertisingData([(core.AdvertisingData.COMPLETE_LOCAL_NAME, name.encode())])
+            loop.call_soon(self.emit, "inquiry_result", address, 0x240404, data, -50)
+
+    async def stop_discovery(self):
+        self.calls.append(("stop_discovery",))
+        self.discovering = False
+
+    async def connect(self, address, transport=None):
+        self.calls.append(("connect", str(address), transport))
+        return FakeLink(str(address), self.calls)
+
+    async def accept(self, *args, **kwargs):
+        if self.incoming is None:
+            await asyncio.Event().wait()
+        await asyncio.sleep(0)
+        return FakeLink(self.incoming, self.calls)
+
+
+def paired(radio, timeout=1.0, address=None):
+    h = host.Host("usb:0")
+    h.device = radio
+    return asyncio.run(h.pair(timeout, address))
+
+
+def test_pair_finds_the_airpods_by_inquiry_and_connects_to_them():
+    radio = FakeRadio(found=[(PHONE, "Bob's phone"), (AIRPODS, "Thomas's AirPods Pro")])
+    link = paired(radio)
+    assert link.peer_address == AIRPODS
+    assert ("connect", AIRPODS, core.PhysicalTransport.BR_EDR) in radio.calls
+    assert not any(c[0] == "connect" and c[1] == PHONE for c in radio.calls)
+    assert radio.calls.index(("stop_discovery",)) < radio.calls.index(("connect", AIRPODS, core.PhysicalTransport.BR_EDR))
+    assert radio.calls[-2:] == [("authenticate", AIRPODS), ("encrypt", AIRPODS)]
+    assert radio.listeners("inquiry_result") == []
+
+
+def test_pair_takes_the_airpods_that_connect_on_their_own():
+    radio = FakeRadio(incoming=AIRPODS)
+    link = paired(radio)
+    assert link.peer_address == AIRPODS
+    assert not radio.discovering
+    assert radio.calls[-2:] == [("authenticate", AIRPODS), ("encrypt", AIRPODS)]
+
+
+def test_pair_with_a_known_address_connects_to_it_without_inquiry():
+    radio = FakeRadio()
+    link = paired(radio, address=AIRPODS)
+    assert link.peer_address == AIRPODS
+    assert ("start_discovery",) not in radio.calls
+    assert ("connect", AIRPODS, core.PhysicalTransport.BR_EDR) in radio.calls
+
+
+def test_pair_times_out_once_and_stops_the_inquiry():
+    radio = FakeRadio(found=[(PHONE, "Bob's phone")])
+    with pytest.raises(TimeoutError):
+        paired(radio, timeout=0.2)
+    assert ("start_discovery",) in radio.calls
+    assert not radio.discovering
+    assert radio.listeners("inquiry_result") == []
+
+
+class SlowPageRadio(FakeRadio):
+    """The page to a known address never answers; cancelling it fails in the controller."""
+
+    async def connect(self, address, transport=None):
+        self.calls.append(("connect", str(address), transport))
+        await asyncio.Event().wait()
+
+    async def cancel_connection(self, address):
+        self.calls.append(("cancel_connection", str(address)))
+        raise core.InvalidStateError("no page to cancel")
+
+
+def test_a_failing_page_cancel_is_logged_and_the_incoming_connection_still_wins(caplog):
+    radio = SlowPageRadio(incoming=AIRPODS)
+    with caplog.at_level("WARNING", logger="podbridge"):
+        link = paired(radio, address=AIRPODS)
+    assert link.peer_address == AIRPODS
+    assert ("cancel_connection", AIRPODS) in radio.calls
+    warnings = [r for r in caplog.records if r.levelname == "WARNING"]
+    assert len(warnings) == 1 and isinstance(warnings[0].exc_info[1], core.InvalidStateError)
+
+
+class BothConnectRadio(FakeRadio):
+    """The AirPods connect in and answer the page in the same loop turn."""
+
+    async def connect(self, address, transport=None):
+        self.calls.append(("connect", str(address), transport))
+        return FakeLink(str(address), self.calls)
+
+    async def accept(self, *args, **kwargs):
+        return FakeLink(self.incoming, self.calls)
+
+
+def test_when_both_connections_succeed_the_losing_one_is_disconnected():
+    radio = BothConnectRadio(incoming=AIRPODS)
+    link = paired(radio, address=AIRPODS)
+    assert sum(1 for c in radio.calls if c[0] == "connect") == 1
+    disconnected = [c[1] for c in radio.calls if c[0] == "disconnect"]
+    assert len(disconnected) == 1 and disconnected[0] is not link

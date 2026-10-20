@@ -262,7 +262,7 @@ async def run_session(host: Host, backend: AudioBackend, session: Session) -> No
 
     `session.make_backend` builds a fresh backend for a lost audio device; without it a restart reuses `backend`.
     """
-    from podbridge import pairing, radio, supervise
+    from podbridge import bond, host as host_module, pairing, radio, supervise
 
     reporter = SafeReporter(session.reporter or ConsoleReporter())
     loop, main = asyncio.get_running_loop(), asyncio.current_task()
@@ -283,9 +283,10 @@ async def run_session(host: Host, backend: AudioBackend, session: Session) -> No
         await radio.start_radio(host, reporter, recover=session.recover)
         step(reporter, "firmware", "done")
         step(reporter, "radio", "done")
-        if address is None:
+        # why: a saved address with no link key (keys.json lost or set aside) cannot reconnect, so pair it again
+        if address is None or not bond.key_saved(host_module.keys_path(), address):
             step(reporter, "pairing", "active")
-            connection = await pairing.pair_with_hint(host, reporter)
+            connection = await pairing.pair_with_hint(host, reporter, address=address)
             if connection is None:
                 return
             address = connection.peer_address.to_string(False)
@@ -412,23 +413,37 @@ def report_failure(reporter, event, exc) -> int:
 
 
 def pair(args, machine=None) -> int:
-    from podbridge import winusb
+    """Start the radio as `run` does, pair (with `--address` when given) and save the address."""
+    from podbridge import pairing, radio, winusb
 
     machine = machine or winusb.Machine()
     vid, pid = find_usb_ids(args, machine)
+    reporter = SafeReporter(ConsoleReporter())
+    recover = radio.recovery_steps(machine, vid, pid)
 
-    async def pair_once() -> None:
+    async def pair_once() -> bool:
         host = Host(f"usb:{vid:04X}:{pid:04X}")
-        await host.start()
         try:
-            print("Hold the AirPods case button until they pair.")
-            connection = await host.pair()
+            await radio.start_radio(host, reporter, recover=recover)
+            connection = await pairing.pair_with_hint(host, reporter, address=getattr(args, "address", None))
+            if connection is None:
+                return False
             save_address(connection.peer_address.to_string(False))
+            return True
         finally:
             await host.close()
 
-    with winusb.bound(vid, pid, machine):
-        asyncio.run(pair_once())
+    session_done = False
+    try:
+        with winusb.bound(vid, pid, machine):
+            paired = asyncio.run(pair_once())
+            session_done = True
+    except Exception as exc:
+        cause = restore_cause(exc, session_done)
+        event = crash.restore_failure(winusb.DriverError(cause)) if cause is not None else crash.describe(exc)
+        return report_failure(reporter, event, exc)
+    if not paired:
+        return 1
     print(f"Paired; address saved to {device_file()}")
     return 0
 

@@ -11,7 +11,9 @@ from bumble.transport import open_transport
 from podbridge import paths
 from podbridge.a2dp_encoder import SAMPLE_RATE, SBC_SAMPLE_RATE, A2dpEncoder
 
+log = logging.getLogger("podbridge")
 APPLE_VENDOR_ID = 0x004C
+AIRPODS_NAME = "AirPods"
 A2DP_SOURCE_HANDLE = 0x10001
 DEVICE_ID_HANDLE = 0x10002
 ADTS_HEADER_SIZE = 7
@@ -150,6 +152,41 @@ class EncodedPacketSource:
         return generate()
 
 
+async def _first_connection(*attempts):
+    """Run the connection attempts together and return the first that succeeds.
+
+    The others are cancelled, and one that connected anyway is disconnected; if every
+    attempt fails, the first failure is raised.
+    """
+    tasks = [asyncio.ensure_future(attempt) for attempt in attempts]
+    errors, winner = [], None
+    try:
+        pending = set(tasks)
+        while pending:
+            done, pending = await asyncio.wait(pending, return_when=asyncio.FIRST_COMPLETED)
+            for task in done:
+                if task.exception() is None:
+                    winner = task.result()
+                    return winner
+                errors.append(task.exception())
+        raise errors[0]
+    finally:
+        for task in tasks:
+            task.cancel()
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        for loser in results:
+            if loser is not winner and not isinstance(loser, BaseException):
+                await _disconnect(loser)
+
+
+async def _disconnect(connection) -> None:
+    """Drop a connection that lost the race; a failure is logged, not raised over the winner."""
+    try:
+        await connection.disconnect()
+    except Exception:
+        log.warning("could not disconnect the losing connection to %s", connection.peer_address, exc_info=True)
+
+
 class Host:
     """Opens the USB controller, pairs, and streams the encoder's output to a connected peer."""
 
@@ -167,14 +204,52 @@ class Host:
         await self.device.power_on()
         return self.device
 
-    async def pair(self, timeout: float = 60.0):
-        """Accept the AirPods' pairing request (case button held) and return the connection."""
+    async def pair(self, timeout: float = 60.0, address: str | None = None):
+        """Pair with the AirPods (case button held) within one `timeout` and return the connection.
+
+        Accepting a connection they start and connecting to them (at `address`, else to the
+        first inquiry result named AirPods) run side by side; the first to connect wins and
+        the other is cancelled.
+        """
         await self.device.set_discoverable(True)
         await self.device.set_connectable(True)
-        connection = await asyncio.wait_for(self.device.accept(), timeout)
-        await connection.authenticate()
-        await connection.encrypt()
+        async with asyncio.timeout(timeout):
+            connection = await _first_connection(self.device.accept(), self._page(address))
+            await connection.authenticate()
+            await connection.encrypt()
         return connection
+
+    async def _page(self, address: str | None):
+        if address is None:
+            address = await self._find_airpods()
+        try:
+            return await self.device.connect(address, transport=core.PhysicalTransport.BR_EDR)
+        except asyncio.CancelledError:
+            # Bumble only cancels a page on its own timeout; stop the controller's page here.
+            try:
+                await self.device.cancel_connection(address)
+            except Exception:
+                log.warning("could not cancel the page to %s", address, exc_info=True)
+            raise
+
+    async def _find_airpods(self):
+        """Run an inquiry until a device answers with an AirPods name and return its address."""
+        found = asyncio.get_running_loop().create_future()
+
+        def on_result(address, _class_of_device, data, _rssi):
+            name = data.get(core.AdvertisingData.COMPLETE_LOCAL_NAME) or data.get(
+                core.AdvertisingData.SHORTENED_LOCAL_NAME
+            )
+            if name and AIRPODS_NAME in name and not found.done():
+                found.set_result(address)
+
+        self.device.on("inquiry_result", on_result)
+        try:
+            await self.device.start_discovery()
+            return await found
+        finally:
+            self.device.remove_listener("inquiry_result", on_result)
+            await self.device.stop_discovery()
 
     async def connect(self, address: str):
         """Reconnect to a bonded peer and encrypt with the stored key."""

@@ -27,11 +27,11 @@ def build_parser() -> argparse.ArgumentParser:
         p.add_argument("--pause", action="store_true", help="wait for Enter before exit")
         if name in ("run", "pair"):
             p.add_argument("--transport", help="Bluetooth USB device, usb:<vid>:<pid> in hex")
+            p.add_argument("--address", help="AirPods Bluetooth address instead of the one in device.json")
         if name == "run":
             p.add_argument("--output-source", help="capture this device instead of the default render endpoint")
             p.add_argument("--no-update", action="store_true", help="do not look for a newer build")
             p.add_argument("--console", action="store_true", help="skip the window and print to the console")
-            p.add_argument("--address", help="AirPods Bluetooth address instead of the one in device.json")
         if name == "restore":
             p.add_argument("--remove-cert", action="store_true", help="also delete the libwdi certificates")
     return parser

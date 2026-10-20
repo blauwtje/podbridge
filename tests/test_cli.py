@@ -130,3 +130,7 @@ def test_window_failure_in_the_windowed_exe_starts_the_console_exe(monkeypatch, 
     assert cli.main(["run", "--address", "AA"]) == 0
     assert calls == []
     assert started == [[str(tmp_path / "podbridge-cli.exe"), "run", "--address", "AA", "--pause", "--no-update"]]
+
+
+def test_pair_takes_an_address():
+    assert cli.build_parser().parse_args(["pair", "--address", "AA:BB:CC:DD:EE:FF"]).address == "AA:BB:CC:DD:EE:FF"
