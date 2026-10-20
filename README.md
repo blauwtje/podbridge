@@ -72,6 +72,30 @@ Other commands:
 - `podbridge selftest`
 - `podbridge firmware` downloads Realtek firmware into `%APPDATA%\podbridge\firmware`. The installer already bundles it.
 
+## The app window
+
+`podbridge run` opens the podbridge window. It shows each run step, and any error comes with a next step. It also shows the AirPods Pro 3 battery and listening mode.
+
+In the window you can change the settings the AirPods accept over AAP:
+
+- Listening mode (Off, Noise Cancellation, Transparency, Adaptive)
+- Press and hold actions, and the microphone choice
+- Mute and End call presses
+- Automatic ear detection, pause media when falling asleep, and charging case sounds
+- Heart rate and Hearing Assist
+
+If your AirPods do not accept a setting, the window says "Not supported on these AirPods".
+
+Some features live only in Apple's software, so the window lists them greyed out: Firmware update, Find My, Hearing test and Ear tip fit test. Use an iPhone or Mac for those.
+
+The window needs WebView2, which the installer adds. If the window cannot open, `podbridge run` falls back to the console. To use the console on purpose, run:
+
+```
+podbridge run --console
+```
+
+The install also has `podbridge-cli.exe`, a console build of the same app. Run it from a terminal to see the console output.
+
 ## Doctor
 
 podbridge checks the admin rights, the Realtek USB ID, the firmware files, the VB-CABLE devices and the Windows speaker every time it starts. It stops at the first failure with one line saying what to fix.
