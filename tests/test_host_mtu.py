@@ -74,7 +74,7 @@ def test_every_aac_packet_fits_the_peer_media_mtu_and_none_is_oversize(monkeypat
     assert all(oversize == 0 for _, oversize in seen)
 
 
-def test_a_packet_that_cannot_fit_the_peer_mtu_is_still_sent_counted_and_warned_once(monkeypatch, caplog):
+def test_a_packet_that_cannot_fit_the_peer_mtu_is_dropped_counted_and_warned_once(monkeypatch, caplog):
     protocol = _peer(monkeypatch)
     protocol.rtp.peer_mtu = 100  # below any AAC packet at the lowest bit rate
     caplog.set_level(logging.INFO, logger="podbridge")
@@ -85,10 +85,12 @@ def test_a_packet_that_cannot_fit_the_peer_mtu_is_still_sent_counted_and_warned_
         await _stop_pump(stream)
 
     asyncio.run(main())
-    assert len(protocol.rtp.sent) >= 40, "a wrong MTU reading must not silence the stream"
-    assert any(len(sdu) > 100 for sdu in protocol.rtp.sent)
+    assert 20 <= len(protocol.rtp.sent) < 46, "the first 8 are dropped, then a wrong MTU reading must not silence the stream"
     assert stats(caplog)[-1][1] > 0, "oversize packets are counted in the stats line"
-    assert caplog.text.count("exceeds the peer MTU 100") == 1
+    assert re.search(r"dropped=8\b", [r.getMessage() for r in caplog.records if r.getMessage().startswith("A2DP packets:")][-1])
+    assert caplog.text.count("A2DP packet of") == 1
+    assert caplog.text.count("exceeds the peer MTU 100; dropped") == 1
+    assert caplog.text.count("every packet exceeds the peer MTU 100; sending them anyway") == 1
 
 
 def test_the_peer_media_mtu_is_logged_once_at_stream_start(monkeypatch, caplog):
