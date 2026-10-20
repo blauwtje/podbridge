@@ -199,3 +199,12 @@ def test_dev_script_pulls_syncs_and_runs_source_elevated_against_the_install():
     assert "-Verb RunAs" in text
     for rebuild in ("pyinstaller", "build_exe", "npm", "ISCC"):
         assert rebuild not in text, rebuild
+
+
+def test_script_functions_do_not_shadow_the_commands_they_run():
+    """PowerShell names ignore case and functions win over programs: `function Git` turns `& git` into endless recursion."""
+    for script in (ROOT / "scripts").glob("*.ps1"):
+        text = script.read_text(encoding="utf-8")
+        functions = {name.lower() for name in re.findall(r"(?im)^\s*function\s+([\w-]+)", text)}
+        commands = {name.lower() for name in re.findall(r"&\s*([A-Za-z][\w.-]*)", text)}
+        assert not functions & commands, f"{script.name}: {sorted(functions & commands)}"
