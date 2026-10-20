@@ -41,6 +41,7 @@ Type: files; Name: "{group}\podbridge restore.lnk"
 [Run]
 Filename: "{app}\vbcable\pack\VBCABLE_Setup_x64.exe"; Parameters: "-i -h"; Check: NeedsVbCable; StatusMsg: "Installing VB-CABLE..."; Flags: waituntilterminated
 Filename: "{app}\podbridge.exe"; Parameters: "run --pause"; Description: "Start podbridge now"; Flags: postinstall nowait skipifsilent
+Filename: "{app}\podbridge.exe"; Parameters: "run --pause"; Flags: nowait skipifnotsilent
 
 [UninstallRun]
 Filename: "{app}\podbridge.exe"; Parameters: "restore --remove-cert"; Flags: runhidden waituntilterminated; RunOnceId: "PodbridgeRestore"

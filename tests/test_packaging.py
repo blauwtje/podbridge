@@ -110,9 +110,23 @@ def test_one_start_menu_shortcut_and_old_ones_removed():
 
 
 def test_setup_offers_to_start_podbridge():
-    run = entries("Run", r"{app}\podbridge.exe", '"run --pause"')
+    run = entries("Run", r"{app}\podbridge.exe", '"run --pause"', "skipifsilent")
     assert len(run) == 1
     assert "postinstall" in run[0]
+
+
+def test_silent_setup_restarts_podbridge():
+    run = entries("Run", r"{app}\podbridge.exe", '"run --pause"', "skipifnotsilent")
+    assert len(run) == 1
+    assert "nowait" in run[0]
+
+
+def test_build_is_stamped_with_its_release_tag():
+    text = WORKFLOW.read_text(encoding="utf-8")
+    assert text.count("RELEASE_TAG:") == 1
+    assert "refs/tags/" in text.split("RELEASE_TAG:")[1].splitlines()[0]
+    assert "tag_name: ${{ env.RELEASE_TAG }}" in text
+    assert text.index("dist/podbridge/build.txt") > text.index("build_exe.ps1")
 
 
 def test_uninstaller_restores_and_removes_cert():

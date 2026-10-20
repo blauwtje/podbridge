@@ -13,6 +13,7 @@ jobs:
   setup:
     runs-on: windows-latest
     env:
+      RELEASE_TAG: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || format('build-{0}', github.run_number) }}
       LIBWDI_VERSION: v1.5.1
       VBCABLE_URL: https://download.vb-audio.com/Download_CABLE/VBCABLE_Driver_Pack45.zip
       FIRMWARE_LICENCE_URL: https://git.kernel.org/pub/scm/linux/kernel/git/firmware/linux-firmware.git/plain/LICENCE.rtlwifi_firmware.txt
@@ -30,6 +31,10 @@ jobs:
       - name: Build podbridge.exe (PyInstaller one-folder)
         shell: pwsh
         run: ./scripts/build_exe.ps1 -DistPath dist
+
+      - name: Stamp the build with its release tag
+        shell: pwsh
+        run: Set-Content -Path dist/podbridge/build.txt -Value $env:RELEASE_TAG -NoNewline
 
       - name: Fetch Realtek firmware
         shell: pwsh
@@ -98,6 +103,6 @@ jobs:
 
       - uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || format('build-{0}', github.run_number) }}
+          tag_name: ${{ env.RELEASE_TAG }}
           prerelease: ${{ !startsWith(github.ref, 'refs/tags/') }}
           files: dist/podbridge-setup.exe
