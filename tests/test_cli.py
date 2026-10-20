@@ -68,7 +68,8 @@ def _fake_run(monkeypatch, started):
     calls = []
     monkeypatch.setattr(cli.update, "apply", lambda args: started)
     monkeypatch.setitem(sys.modules, "podbridge.app", type(sys)("podbridge.app"))
-    sys.modules["podbridge.app"].run = lambda args: calls.append(args) or 5
+    sys.modules["podbridge.app"].run = lambda args, reporter=None: calls.append((args, reporter)) or 5
+    monkeypatch.setattr(cli.window, "open", lambda session_fn, ui_state: False)
     return calls
 
 
@@ -89,3 +90,30 @@ def test_no_update_flag_only_on_run():
     assert cli.build_parser().parse_args(["run", "--no-update"]).no_update is True
     with pytest.raises(SystemExit):
         cli.build_parser().parse_args(["pair", "--no-update"])
+
+
+def test_run_opens_the_window_with_a_session(monkeypatch):
+    calls = _fake_run(monkeypatch, False)
+    opened = []
+
+    def fake_open(session_fn, ui_state):
+        opened.append(ui_state)
+        session_fn()
+        return True
+
+    monkeypatch.setattr(cli.window, "open", fake_open)
+    assert cli.main(["run"]) == 0
+    assert calls[0][1] is opened[0]
+
+
+def test_run_falls_back_to_console_when_window_fails(monkeypatch):
+    calls = _fake_run(monkeypatch, False)
+    assert cli.main(["run"]) == 5
+    assert calls[0][1] is None
+
+
+def test_console_flag_skips_the_window(monkeypatch):
+    calls = _fake_run(monkeypatch, False)
+    monkeypatch.setattr(cli.window, "open", lambda *_: pytest.fail("opened"))
+    assert cli.main(["run", "--console"]) == 5
+    assert calls[0][1] is None
