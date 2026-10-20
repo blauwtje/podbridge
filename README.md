@@ -42,6 +42,10 @@ Get `podbridge-setup.exe` from `github.com/blauwtje/podbridge/releases`. This is
 
 The first run pairs the AirPods. It saves the pairing in `%APPDATA%\podbridge`.
 
+podbridge keeps its own pairing and does not use the Windows one. If the AirPods reject the saved pairing, podbridge drops it and the next run pairs again: hold the case button.
+
+podbridge saves the pairing in the `%APPDATA%` of the account that approves the UAC prompt. If a different account approves it, podbridge pairs again and writes `doctor.log` in that account's folder.
+
 To pair again, run:
 
 ```
@@ -146,6 +150,8 @@ podbridge prints one fix line and stops: do what it says, then open "podbridge" 
 You want every stage checked: run `podbridge doctor`, then read `%APPDATA%\podbridge\doctor.log`.
 
 The AirPods need pairing again: run `podbridge pair`.
+
+The speaker is still muted after a crash: run podbridge once and close it, or unmute it in Windows.
 
 `podbridge restore` fails: use the manual fallback below.
 
