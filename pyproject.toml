@@ -11,6 +11,7 @@ dependencies = [
     "libusb_package",
     "PyAudioWPatch; sys_platform == 'win32'",
     "pycaw; sys_platform == 'win32'",
+    "pywebview; sys_platform == 'win32'",
 ]
 
 [project.scripts]
