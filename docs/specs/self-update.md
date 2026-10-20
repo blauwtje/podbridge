@@ -18,6 +18,7 @@ When the user opens podbridge on the Windows PC and GitHub has a newer build, po
 12. Failure never blocks start: any network, timeout, JSON or validation error prints one `podbridge: update skipped (<reason>)` line and `run` continues; the API call times out after 10 s, the download after `DOWNLOAD_TIMEOUT_S`; up to date prints nothing; closed by exo.
 13. The one last manual install: the user opens `github.com/blauwtje/podbridge/releases` on the PC and clicks `podbridge-setup.exe` under the top entry; no extra short link is built, because `/releases/latest/download/` skips prereleases; closed by exo.
 14. Land: push; closed by the user.
+15. The repo `blauwtje/podbridge` is public, so the PC reads its releases without a login; made public 2026-10-20 after a clean `gitleaks` scan of all refs; closed by the user.
 
 ## Non-goals
 - No code signing of `podbridge-setup.exe` and no signature check beyond the SHA256 digest (`installer/podbridge.iss`, `.github/workflows/release.yml`).
@@ -25,11 +26,8 @@ When the user opens podbridge on the Windows PC and GitHub has a newer build, po
 - No GitHub token in the app or on the PC (`src/podbridge/update.py`).
 - No change to the VB-CABLE install or its restart rule (`installer/podbridge.iss` `[Code]`).
 
-## Open points
-- The GitHub repo `blauwtje/podbridge` is private, so the PC cannot see its builds without a login: may the repo be made public, or should CI copy each setup to a separate public repo?
-
 ## Assumptions
-- code: the repo is private: `gh api repos/blauwtje/podbridge` gives `"private": true`, and an anonymous `GET /repos/blauwtje/podbridge/releases` returns 404; the tasks below assume the open point is answered "make it public".
+- code: the repo is public: `gh repo view blauwtje/podbridge` gives `PUBLIC`, and an anonymous `GET /repos/blauwtje/podbridge/releases` returns 200.
 - code: release assets carry `"digest": "sha256:<hex>"` without any CI step: `build-3` and `build-4` show it via `gh api repos/blauwtje/podbridge/releases`.
 - code: the asset is `podbridge-setup.exe` and the tag is `build-<run_number>` or the pushed `v*` tag (`.github/workflows/release.yml:99-103`).
 - code: the exe is built `--onedir --console --uac-admin` (`scripts/build_exe.ps1:9`), so the app and the setup it starts run elevated without a UAC prompt; `PrivilegesRequired=admin` (`installer/podbridge.iss:13`).
