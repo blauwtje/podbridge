@@ -8,8 +8,23 @@ FEATURES = bytes.fromhex("040004004D00FF00000000000000")
 NOTIFICATIONS = bytes.fromhex("040004000F00FFFFFFFF")
 START = bytes.fromhex("04000400580000000900000182000000049600")
 STOP = bytes.fromhex("040004005800000002000301")
-CONVERSATIONAL_AWARENESS_OFF = bytes.fromhex("0400040009002802000000")
-CONVERSATIONAL_AWARENESS_ON = CONVERSATIONAL_AWARENESS_OFF[:7] + b"\x01" + CONVERSATIONAL_AWARENESS_OFF[8:]
+_CONTROL_PREFIX = bytes.fromhex("040004000900")
+
+
+def control(id: int, *data: int) -> bytes:
+    """The 11-byte control-command frame: prefix, setting id, data bytes d1..d4 (zero padded)."""
+    return _CONTROL_PREFIX + bytes([id, *data]).ljust(5, b"\0")
+
+
+def parse_control(frame: bytes) -> tuple[int, bytes] | None:
+    """Return (id, four data bytes) for a control frame, else None."""
+    if len(frame) != 11 or frame[:6] != _CONTROL_PREFIX:
+        return None
+    return frame[6], bytes(frame[7:])
+
+
+CONVERSATIONAL_AWARENESS_OFF = control(0x28, 2)
+CONVERSATIONAL_AWARENESS_ON = control(0x28, 1)
 
 HEADER_LEN = 22
 _RECORD_HEAD = 5
