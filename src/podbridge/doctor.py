@@ -4,7 +4,7 @@ import ctypes
 import json
 import logging
 import re
-from contextlib import AsyncExitStack
+from contextlib import AsyncExitStack, contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime
 
@@ -125,6 +125,40 @@ async def subversions_line(device, before) -> str:
     )
 
 
+@contextmanager
+def usb_claims():
+    """Yield a list that records each libusb claimInterface / setInterfaceAltSetting call and its outcome."""
+    import usb1
+
+    calls, handle, saved = [], usb1.USBDeviceHandle, {}
+
+    def traced(name, original):
+        def call(self, interface, *rest):
+            label = f"{name}({', '.join(str(value) for value in (interface, *rest))})"
+            try:
+                result = original(self, interface, *rest)
+            except usb1.USBError as error:
+                calls.append(f"{label} {type(error).__name__} {error}")
+                raise
+            calls.append(f"{label} ok")
+            return result
+
+        return call
+
+    for name in ("claimInterface", "setInterfaceAltSetting"):
+        saved[name] = getattr(handle, name)
+        setattr(handle, name, traced(name, saved[name]))
+    try:
+        yield calls
+    finally:
+        for name, original in saved.items():
+            setattr(handle, name, original)
+
+
+def claims_note(claims: list) -> str:
+    return f" (USB calls: {'; '.join(claims)})" if claims else ""
+
+
 async def bumble_transport(ctx: Context) -> str:
     """Bumble transport and firmware load"""
     from podbridge import radio
@@ -139,11 +173,13 @@ async def bumble_transport(ctx: Context) -> str:
     driver_log.addHandler(probe)
     driver_log.setLevel(logging.DEBUG)
     try:
-        device = await radio.start_radio(ctx.host, ConsoleReporter(), timeout=ctx.radio_timeout, recover=recover)
-    except radio.RadioError as exc:
-        raise StageFailed(f"{exc}; {exc.next_step}") from exc
-    except Exception as exc:
-        raise StageFailed(f"{exc}; check the firmware files and that WinUSB is bound") from exc
+        with usb_claims() as claims:
+            try:
+                device = await radio.start_radio(ctx.host, ConsoleReporter(), timeout=ctx.radio_timeout, recover=recover)
+            except radio.RadioError as exc:
+                raise StageFailed(f"{exc}; {exc.next_step}{claims_note(claims)}") from exc
+            except Exception as exc:
+                raise StageFailed(f"{exc}; check the firmware files and that WinUSB is bound{claims_note(claims)}") from exc
     finally:
         driver_log.removeHandler(probe)
         driver_log.setLevel(level)
