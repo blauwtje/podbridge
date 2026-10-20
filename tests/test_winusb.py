@@ -66,6 +66,7 @@ class FakeWindows:
         self.state_at_wdi = json.loads(self.state_path.read_text()) if self.state_path.exists() else None
         if self.wdi_exit == 0 and self.wdi_binds:
             self.driver = LIBWDI_INF
+            self.providers[LIBWDI_INF] = "libwdi"
         return subprocess.CompletedProcess(args, self.wdi_exit, self.wdi_stdout, self.wdi_stderr)
 
     def pnputil(self, rest):
@@ -77,6 +78,7 @@ class FakeWindows:
         elif rest == ["/enum-drivers"]:
             out = driver_store(self.providers)
         elif rest[0] == "/delete-driver":
+            self.providers.pop(rest[1], None)
             if rest[1] == self.driver and self.delete_unbinds:
                 self.driver = None
             if self.delete_exit:
@@ -281,6 +283,20 @@ def test_restore_refuses_an_inf_whose_provider_is_not_libwdi(setup, providers):
     assert not fake.ran("pnputil", "/scan-devices")
     assert fake.driver == LIBWDI_INF
     assert state_path.exists()
+
+
+def test_restore_after_the_libwdi_inf_is_already_deleted(setup):
+    fake, machine, state_path = setup
+    write_state(state_path)
+    fake.driver = LIBWDI_INF
+    fake.scan_rebinds = False
+    with pytest.raises(winusb.DriverError, match="still uses WinUSB"):
+        winusb.restore_driver(machine)
+    assert LIBWDI_INF not in fake.providers
+    assert state_path.exists()
+    fake.driver = REALTEK_INF
+    assert winusb.restore_driver(machine) is False
+    assert not state_path.exists()
 
 
 def test_provider_lookup_failure_fails_closed(setup):
