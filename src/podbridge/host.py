@@ -1,9 +1,10 @@
 """One Bumble host: pairs with the AirPods, keeps the bond and streams A2DP from the encoder."""
 import asyncio
+import copy
 import logging
 import os
 
-from bumble import a2dp, avdtp, core, hci, sdp
+from bumble import a2dp, avdtp, core, hci, l2cap, sdp
 from bumble.device import Device
 from bumble.keys import JsonKeyStore
 from bumble.transport import open_transport
@@ -29,6 +30,7 @@ DID_VERSION_ID = 0x0203
 DID_PRIMARY_RECORD = 0x0204
 DID_VENDOR_ID_SOURCE = 0x0205
 SBC_ONE_FRAME_HEADER = bytes([1])
+L2CAP_FLUSH_TIMEOUT_OPTION = 0x02
 
 
 def device_id_records(handle: int) -> list[sdp.ServiceAttribute]:
@@ -72,8 +74,35 @@ def keys_path():
     return paths.appdata_dir() / "keys.json"
 
 
+def accept_flush_timeout() -> None:
+    """Let Bumble's ClassicChannel accept the Flush Timeout option (0x02) in a peer Configure Request.
+
+    Bumble 0.0.236 answers it with FAILURE_UNKNOWN_OPTIONS; the AirPods resend it until they disconnect, so the
+    AAP channel never opens. The option is dropped before Bumble parses it, so every other option is handled
+    as before. Does nothing when Bumble already handles the option, or when this is already installed.
+    """
+    original = l2cap.ClassicChannel.on_configure_request
+    if getattr(original, "podbridge_flush_timeout", False) or "FLUSH_TIMEOUT" in original.__code__.co_names:
+        return
+
+    def on_configure_request(self, request):
+        kept, data = b"", request.options
+        while len(data) >= 2:
+            size = 2 + data[1]
+            if data[0] != L2CAP_FLUSH_TIMEOUT_OPTION:
+                kept += data[:size]
+            data = data[size:]
+        request = copy.copy(request)
+        request.options = kept + data
+        original(self, request)
+
+    on_configure_request.podbridge_flush_timeout = True
+    l2cap.ClassicChannel.on_configure_request = on_configure_request
+
+
 def build_device(hci_source, hci_sink, keystore_file=None) -> Device:
     """Classic-only Device with the SDP records and the bond keystore."""
+    accept_flush_timeout()
     device = Device.with_hci("podbridge", hci.Address("F0:F1:F2:F3:F4:F5"), hci_source, hci_sink)
     device.classic_enabled = True
     device.le_enabled = False
