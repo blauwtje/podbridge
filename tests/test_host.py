@@ -20,6 +20,16 @@ class FakeLocal(EventEmitter):
     def __init__(self, codec_type, pump):
         super().__init__()
         self.codec_type, self.pump = codec_type, pump
+        self.packet_pump = pump
+
+    async def start(self):
+        return None
+
+    async def on_start_command(self):
+        return None
+
+    async def on_suspend_command(self):
+        return None
 
 
 class Null:

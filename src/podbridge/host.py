@@ -22,6 +22,9 @@ ADTS_HEADER_SIZE = 7
 SBC_BITPOOL = 53
 PACKET_QUEUE = 64
 STATS_S = 10.0
+RESTART_DELAY_S = 1.0
+RESTART_RETRY_S = 5.0
+RESTART_ATTEMPTS = 3
 log = logging.getLogger("podbridge")
 _BT_SIG_SOURCE = 1
 _DID_VERSION = 0x0100
@@ -140,10 +143,79 @@ def codec_capabilities(codec: str) -> avdtp.MediaCodecCapabilities:
     return avdtp.MediaCodecCapabilities(avdtp.AVDTP_AUDIO_MEDIA_TYPE, codec_type, info)
 
 
-def log_stream_events(local, codec: str) -> None:
-    """Log the peer's AVDTP SUSPEND and START commands, which stop and restart the pump."""
-    local.on(local.EVENT_SUSPEND, lambda: log.info("A2DP stream suspended by the peer (%s)", codec))
-    local.on(local.EVENT_START, lambda: log.info("A2DP stream started again by the peer (%s)", codec))
+class StreamRestarter:
+    """Starts the stream again after a peer SUSPEND; only the source may send START and the AirPods never do."""
+
+    def __init__(self, local, codec: str):
+        self.local, self.codec = local, codec
+        self.task: asyncio.Task | None = None
+
+    def schedule(self) -> None:
+        """Start the restart task unless one already waits or retries; a new SUSPEND reuses it."""
+        if self.task is None or self.task.done():
+            self.task = asyncio.create_task(self._run())
+
+    async def stop(self) -> None:
+        if self.task is not None:
+            self.task.cancel()
+            await asyncio.gather(self.task, return_exceptions=True)
+            self.task = None
+
+    async def _run(self) -> None:
+        # why: Bumble moves the stream to OPEN only after the local SUSPEND handler returns, so check after the delay
+        await asyncio.sleep(RESTART_DELAY_S)
+        for attempt in range(1, RESTART_ATTEMPTS + 1):
+            if not self._restartable():
+                return
+            try:
+                await self.local.stream.start()
+            except Exception as exc:
+                if attempt == RESTART_ATTEMPTS:
+                    log.warning("A2DP restart gave up after %d attempts (%s): %r", attempt, self.codec, exc)
+                    return
+                log.warning("A2DP restart after peer SUSPEND failed (%r); retrying in %.0f s", exc, RESTART_RETRY_S)
+                await asyncio.sleep(RESTART_RETRY_S)
+            else:
+                log.info("A2DP stream restarted after peer SUSPEND (%s)", self.codec)
+                return
+
+    def _restartable(self) -> bool:
+        stream = self.local.stream
+        channel = self.local.protocol.l2cap_channel
+        return (
+            stream is not None
+            and stream.state == avdtp.State.OPEN
+            and channel.state == l2cap.ClassicChannel.State.OPEN
+        )
+
+
+def handle_peer_commands(local, codec: str) -> StreamRestarter:
+    """Log the peer's AVDTP SUSPEND and START commands, and start the stream again after a SUSPEND."""
+    # why: Bumble 0.0.236's LocalSource overrides the handlers that emit EVENT_SUSPEND and EVENT_START, so wrap them
+    restarter = StreamRestarter(local, codec)
+    start, on_suspend, on_start = local.start, local.on_suspend_command, local.on_start_command
+
+    async def start_once():
+        # why: a peer START can land while our restart awaits the peer; a second pump.start() would orphan the first
+        pump = local.packet_pump
+        if pump is not None and pump.pump_task is not None and not pump.pump_task.done():
+            return
+        await start()
+
+    async def on_suspend_command():
+        log.info("A2DP stream suspended by the peer (%s)", codec)
+        try:
+            return await on_suspend()
+        finally:
+            restarter.schedule()
+
+    async def on_start_command():
+        log.info("A2DP stream started again by the peer (%s)", codec)
+        return await on_start()
+
+    local.start = start_once
+    local.on_suspend_command, local.on_start_command = on_suspend_command, on_start_command
+    return restarter
 
 
 class EncodedPacketSource:
@@ -255,6 +327,7 @@ class Host:
         self.codec = codec
         self.device: Device | None = None
         self._transport = None
+        self._restarter = None
 
     async def start(self) -> Device:
         use_firmware_folder()
@@ -339,20 +412,27 @@ class Host:
 
     async def _start(self, protocol: avdtp.Protocol) -> avdtp.Stream:
         """Pick the peer's sink for our codec, configure a stream to it and start it."""
+        await self._stop_restarter()
         codec_type = a2dp.A2DP_MPEG_2_4_AAC_CODEC_TYPE if self.codec == "aac" else a2dp.A2DP_SBC_CODEC_TYPE
         sink = protocol.find_remote_sink_by_codec(avdtp.AVDTP_AUDIO_MEDIA_TYPE, codec_type)
         if sink is None:
             raise RuntimeError(f"peer has no {self.codec} sink")
         pump = avdtp.MediaPacketPump(self.source.packets)
         local = protocol.add_source(codec_capabilities(self.codec), pump)
-        log_stream_events(local, self.codec)
+        self._restarter = handle_peer_commands(local, self.codec)
         log.info("A2DP configuring %s, source %s#%d", self.codec, type(self.source).__name__, id(self.source))
         stream = await protocol.create_stream(local, sink)
         await stream.start()
         log.info("A2DP stream started (%s)", self.codec)
         return stream
 
+    async def _stop_restarter(self) -> None:
+        if self._restarter is not None:
+            await self._restarter.stop()
+            self._restarter = None
+
     async def close(self) -> None:
+        await self._stop_restarter()
         if self._transport is not None:
             await self._transport.close()
             self._transport = None

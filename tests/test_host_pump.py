@@ -41,16 +41,19 @@ def test_pump_sends_again_after_suspend_then_start():
     assert total - before > 0, "no packets after SUSPEND then START"
 
 
-def test_suspend_and_start_events_are_logged(caplog):
+def test_suspend_and_start_commands_are_logged_and_only_suspend_schedules_the_restart(caplog, monkeypatch):
     import logging
 
     from podbridge import host
 
+    scheduled = []
+    monkeypatch.setattr(host.StreamRestarter, "schedule", lambda self: scheduled.append(self))
     caplog.set_level(logging.INFO, logger="podbridge")
     local = avdtp.LocalSource.__new__(avdtp.LocalSource)
     EventEmitter.__init__(local)
-    host.log_stream_events(local, "aac")
-    local.emit(local.EVENT_SUSPEND)
-    local.emit(local.EVENT_START)
-    text = caplog.text
-    assert "suspended" in text and "started again" in text
+    local.packet_pump = None
+    host.handle_peer_commands(local, "aac")
+    asyncio.run(local.on_start_command())
+    assert scheduled == [] and "started again" in caplog.text
+    asyncio.run(local.on_suspend_command())
+    assert len(scheduled) == 1 and "suspended" in caplog.text
