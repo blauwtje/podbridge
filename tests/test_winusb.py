@@ -597,7 +597,7 @@ class FakeLock:
 
     def __call__(self):
         if self.held:
-            raise winusb.DriverError(winusb.ALREADY_RUNNING)
+            raise winusb.AlreadyRunning(winusb.ALREADY_RUNNING)
         self.held = True
         return self.release
 

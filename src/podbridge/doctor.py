@@ -82,6 +82,8 @@ async def winusb_bind(ctx: Context) -> None:
 
     try:
         ctx.stack.enter_context(winusb.bound(ctx.vid, ctx.pid, ctx.machine))
+    except winusb.AlreadyRunning as exc:
+        raise StageFailed(str(exc)) from exc
     except winusb.DriverError as exc:
         raise StageFailed(f"{exc}; run podbridge restore") from exc
 
