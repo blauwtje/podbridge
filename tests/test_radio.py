@@ -46,3 +46,18 @@ def test_second_timeout_raises():
     assert [e.kind for e in rec.events] == ["radio_reset", "radio_timeout"]
     assert "unplug power or reboot" in rec.events[-1].message
     assert host.closed == 2
+
+
+def test_usb_open_error_is_named():
+    import usb1
+
+    class Broken(Host):
+        async def start(self):
+            raise usb1.USBErrorAccess()
+
+    rec = Rec()
+    with pytest.raises(radio.RadioError):
+        asyncio.run(radio.start_radio(Broken(0), rec, timeout=0.05))
+    assert [e.kind for e in rec.events] == ["usb_open_failed"]
+    assert "LIBUSB_ERROR_ACCESS" in rec.events[0].message
+    assert "podbridge restore" in rec.events[0].next_step
