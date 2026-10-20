@@ -465,3 +465,12 @@ def test_idle_endpoint_returns_silence_instead_of_blocking(windows, monkeypatch)
     backend._in.available = 0
     backend._in.read = lambda n: pytest.fail("must not block on read")
     assert backend.read_loopback(960) == bytes(960 * 4)
+
+
+@pytest.mark.parametrize("scalar, db, gain", [(0.0, -96.0, 0.0), (0.5, -6.0206, 0.5), (1.0, 0.0, 1.0)])
+def test_windows_volume_is_the_gain_the_endpoint_applies(windows, monkeypatch, scalar, db, gain):
+    from podbridge.audio_io import PyAudioWPatchBackend
+
+    monkeypatch.setattr(FakeVolume, "GetMasterVolumeLevelScalar", lambda self: scalar, raising=False)
+    monkeypatch.setattr(FakeVolume, "GetMasterVolumeLevel", lambda self: db, raising=False)
+    assert PyAudioWPatchBackend().get_volume() == pytest.approx(gain, abs=1e-4)
