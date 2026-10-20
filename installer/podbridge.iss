@@ -38,6 +38,9 @@ Name: "{group}\podbridge"; Filename: "{app}\podbridge.exe"; Parameters: "run --p
 Type: files; Name: "{group}\podbridge doctor.lnk"
 Type: files; Name: "{group}\podbridge restore.lnk"
 
+[UninstallDelete]
+Type: filesandordirs; Name: "{app}\usb_driver"
+
 [Run]
 Filename: "{app}\vbcable\pack\VBCABLE_Setup_x64.exe"; Parameters: "-i -h"; Check: NeedsVbCable; StatusMsg: "Installing VB-CABLE..."; Flags: waituntilterminated
 Filename: "{app}\podbridge.exe"; Parameters: "run --pause"; Description: "Start podbridge now"; Flags: postinstall nowait skipifsilent

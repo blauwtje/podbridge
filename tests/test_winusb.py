@@ -44,6 +44,8 @@ class FakeWindows:
         self.driver = driver
         self.calls = []
         self.wdi_exit = 0
+        self.wdi_stdout = ""
+        self.wdi_stderr = ""
         self.wdi_binds = True
         self.scan_rebinds = True
         self.delete_unbinds = True
@@ -63,7 +65,7 @@ class FakeWindows:
         self.state_at_wdi = json.loads(self.state_path.read_text()) if self.state_path.exists() else None
         if self.wdi_exit == 0 and self.wdi_binds:
             self.driver = LIBWDI_INF
-        return subprocess.CompletedProcess(args, self.wdi_exit, "", "")
+        return subprocess.CompletedProcess(args, self.wdi_exit, self.wdi_stdout, self.wdi_stderr)
 
     def pnputil(self, rest):
         out = ""
@@ -98,6 +100,7 @@ def setup(tmp_path):
         runner=fake,
         state_path=state_path,
         wdi_simple=tmp_path / "tools" / "wdi-simple.exe",
+        wdi_dest=tmp_path / "usb_driver",
         sleep=lambda s: None,
     )
     return fake, machine, state_path
@@ -119,7 +122,7 @@ def test_bind_records_state_before_wdi_simple_and_restores_on_exit(setup):
         }
     assert fake.state_at_wdi == {"instance_id": INSTANCE, "original_inf": REALTEK_INF, "libwdi_inf": None}
     wdi = next(c for c in fake.calls if c[0].endswith("wdi-simple.exe"))
-    assert wdi[1:] == ["--vid", "0x0BDA", "--pid", "0x887B", "--type", "0", "--silent"]
+    assert wdi[1:] == ["--vid", "0x0BDA", "--pid", "0x887B", "--type", "0", "--dest", str(machine.wdi_dest)]
     assert fake.ran("pnputil", "/delete-driver", LIBWDI_INF, "/uninstall", "/force")
     assert fake.ran("pnputil", "/scan-devices")
     assert fake.driver == REALTEK_INF
@@ -331,3 +334,113 @@ def test_symlinked_state_file_is_refused(setup, tmp_path):
             pytest.fail("body must not run")
     assert target.read_text() == "keep me"
     assert fake.calls == []
+
+
+def test_bind_gives_wdi_simple_an_absolute_dest_in_the_install_folder(setup):
+    fake, machine, state_path = setup
+    with winusb.bound(VID, PID, machine):
+        pass
+    call = next(c for c in fake.calls if Path(c[0]).name == "wdi-simple.exe")
+    dest = Path(call[call.index("--dest") + 1])
+    assert dest.is_absolute()
+    assert dest == machine.wdi_dest
+    assert "--silent" not in call
+
+
+def test_default_dest_is_under_the_admin_only_install_folder(monkeypatch, tmp_path):
+    monkeypatch.setattr(winusb, "install_dir", lambda: tmp_path)
+    monkeypatch.setenv("APPDATA", str(tmp_path / "appdata"))
+    monkeypatch.setenv("TEMP", str(tmp_path / "temp"))
+    assert winusb.Machine().wdi_dest.parent == tmp_path
+
+
+def test_bind_empties_a_leftover_dest_before_wdi_simple(setup):
+    fake, machine, state_path = setup
+    (machine.wdi_dest / "sub").mkdir(parents=True)
+    (machine.wdi_dest / "old.inf").write_text("stale")
+    seen = []
+    original = fake.wdi
+    fake.wdi = lambda args: (seen.append(sorted(p.name for p in machine.wdi_dest.iterdir())), original(args))[1]
+    with winusb.bound(VID, PID, machine):
+        pass
+    assert seen == [[]]
+
+
+def test_bind_replaces_a_leftover_file_at_the_dest(setup):
+    fake, machine, state_path = setup
+    machine.wdi_dest.write_text("not a folder")
+    with winusb.bound(VID, PID, machine):
+        assert machine.wdi_dest.is_dir()
+
+
+def test_bind_refuses_a_linked_dest(setup, tmp_path):
+    fake, machine, state_path = setup
+    target = tmp_path / "elsewhere"
+    target.mkdir()
+    (target / "keep.txt").write_text("x")
+    try:
+        machine.wdi_dest.symlink_to(target, target_is_directory=True)
+    except OSError:
+        pytest.skip("symlinks unavailable")
+    with pytest.raises(winusb.DriverError, match="link"):
+        with winusb.bound(VID, PID, machine):
+            pytest.fail("body must not run")
+    assert (target / "keep.txt").exists()
+    assert not fake.ran(str(machine.wdi_simple))
+
+
+def test_wdi_simple_failure_shows_its_own_output(setup):
+    fake, machine, state_path = setup
+    fake.wdi_exit = -3
+    fake.wdi_stdout = "Extracting driver files...\n  Access denied\n"
+    fake.wdi_stderr = "libwdi:error [check_dir] could not create usb_driver\n"
+    with pytest.raises(winusb.DriverError) as info:
+        with winusb.bound(VID, PID, machine):
+            pytest.fail("body must not run")
+    text = str(info.value)
+    assert "Access denied" in text
+    assert "could not create usb_driver" in text
+
+
+def test_failure_output_keeps_only_the_last_lines(setup):
+    fake, machine, state_path = setup
+    fake.wdi_exit = 1
+    fake.wdi_stdout = "\n".join(f"line {i}" for i in range(winusb.OUTPUT_TAIL_LINES + 5))
+    with pytest.raises(winusb.DriverError) as info:
+        winusb.run_checked(machine, [str(machine.wdi_simple), "--vid"])
+    text = str(info.value)
+    assert f"line {winusb.OUTPUT_TAIL_LINES + 4}" in text
+    assert "line 4" not in text.split("\n")
+    assert "line 5" in text.split("\n")
+
+
+@pytest.mark.parametrize("returncode, shown", [
+    (4294967293, "-3 (WDI_ERROR_ACCESS)"),
+    (-3, "-3 (WDI_ERROR_ACCESS)"),
+    (4294967282, "-14 (WDI_ERROR_USER_CANCEL)"),
+    (-99, "-99 (WDI_ERROR_OTHER)"),
+    (5, "5 (unknown libwdi code)"),
+])
+def test_wdi_exit_code_is_signed_and_named(setup, returncode, shown):
+    fake, machine, state_path = setup
+    fake.wdi_exit = returncode
+    with pytest.raises(winusb.DriverError) as info:
+        with winusb.bound(VID, PID, machine):
+            pytest.fail("body must not run")
+    assert f"exit code {shown}" in str(info.value)
+
+
+def test_unsigned_exit_code_keeps_its_raw_value(setup):
+    fake, machine, state_path = setup
+    fake.wdi_exit = 4294967293
+    with pytest.raises(winusb.DriverError, match="raw 4294967293"):
+        with winusb.bound(VID, PID, machine):
+            pytest.fail("body must not run")
+
+
+def test_other_tools_get_a_signed_code_without_a_libwdi_name(setup):
+    fake, machine, state_path = setup
+    machine.runner = lambda args: subprocess.CompletedProcess(args, 3, "", "")
+    with pytest.raises(winusb.DriverError) as info:
+        winusb.run_checked(machine, ["pnputil", "/scan-devices"])
+    assert str(info.value) == "pnputil /scan-devices failed with exit code 3"
