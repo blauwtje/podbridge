@@ -117,3 +117,16 @@ def test_console_flag_skips_the_window(monkeypatch):
     monkeypatch.setattr(cli.window, "open", lambda *_: pytest.fail("opened"))
     assert cli.main(["run", "--console"]) == 5
     assert calls[0][1] is None
+
+
+def test_window_failure_in_the_windowed_exe_starts_the_console_exe(monkeypatch, tmp_path):
+    calls = _fake_run(monkeypatch, False)
+    exe = tmp_path / "podbridge.exe"
+    (tmp_path / "podbridge-cli.exe").write_text("")
+    monkeypatch.setattr(sys, "executable", str(exe))
+    monkeypatch.setattr(sys, "frozen", True, raising=False)
+    started = []
+    monkeypatch.setattr(cli.subprocess, "Popen", lambda command: started.append(command))
+    assert cli.main(["run", "--address", "AA"]) == 0
+    assert calls == []
+    assert started == [[str(tmp_path / "podbridge-cli.exe"), "run", "--address", "AA", "--pause", "--no-update"]]

@@ -130,7 +130,7 @@ def test_routes_events_sends_writes_and_ca_choice(monkeypatch):
 
     asyncio.run(scenario())
     assert events[0] == aap_inbound.Battery(1, 80, 1)
-    assert events[1] == (0x01, bytes([2, 0, 0, 0]))
+    assert events[1] == ctl  # a setting echo reaches SettingsState.apply as the frame bytes
     assert len(events) == 2
 
 

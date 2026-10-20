@@ -1,5 +1,6 @@
 import sys
 import threading
+import time
 import types
 
 from podbridge import window
@@ -8,9 +9,16 @@ from podbridge import window
 class FakeState:
     def __init__(self):
         self.subscribers = []
+        self.stopped = []
 
     def subscribe(self, fn):
         self.subscribers.append(fn)
+
+    def write_setting(self, key, value):
+        pass
+
+    def stop(self):
+        self.stopped.append(True)
 
 
 def fake_webview(monkeypatch, start=None):
@@ -70,3 +78,73 @@ def test_web_dir_prefers_bundle(monkeypatch, tmp_path):
 def test_web_dir_source_tree(monkeypatch):
     monkeypatch.delattr(sys, "_MEIPASS", raising=False)
     assert window.web_dir().parts[-3:] == ("src", "podbridge", "web")
+
+
+def test_open_exposes_the_js_api(monkeypatch, tmp_path):
+    monkeypatch.setattr(window, "webview2_present", lambda: True)
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
+    calls = fake_webview(monkeypatch)
+    state = FakeState()
+    assert window.open(lambda: None, state) is True
+    api = calls["create"][2]["js_api"]
+    assert {"get_snapshot", "set_setting", "copy_details"} <= set(dir(api))
+
+
+def test_closing_the_window_stops_the_session_and_waits_for_it(monkeypatch, tmp_path):
+    monkeypatch.setattr(window, "webview2_present", lambda: True)
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
+    fake_webview(monkeypatch)
+    state = FakeState()
+    finished = []
+
+    def session():
+        while not state.stopped:
+            pass
+        finished.append(True)
+
+    assert window.open(session, state) is True
+    assert finished == [True]
+
+
+def test_a_failed_start_after_the_session_began_stops_it_and_logs_why(monkeypatch, tmp_path, caplog):
+    monkeypatch.setattr(window, "webview2_present", lambda: True)
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
+
+    def boom(func, **kw):
+        func()
+        raise RuntimeError("no gui")
+
+    fake_webview(monkeypatch, start=boom)
+    state = FakeState()
+    finished = []
+
+    def session():
+        while not state.stopped:
+            pass
+        finished.append(True)
+
+    assert window.open(session, state) is False
+    assert finished == [True] and "no gui" in caplog.text
+
+
+def test_the_console_fallback_waits_for_a_session_that_is_slow_to_stop(monkeypatch, tmp_path):
+    monkeypatch.setattr(window, "webview2_present", lambda: True)
+    monkeypatch.setattr(window, "JOIN_TIMEOUT_S", 0.05)
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
+
+    def boom(func, **kw):
+        func()
+        raise RuntimeError("no gui")
+
+    fake_webview(monkeypatch, start=boom)
+    state = FakeState()
+    finished = []
+
+    def session():
+        while not state.stopped:
+            time.sleep(0.01)
+        time.sleep(0.3)
+        finished.append(True)
+
+    assert window.open(session, state) is False
+    assert finished == [True]

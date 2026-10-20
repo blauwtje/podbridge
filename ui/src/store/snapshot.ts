@@ -40,7 +40,7 @@ export interface Snapshot {
 export interface PbApi {
   get_snapshot(): Promise<Snapshot>
   set_setting(key: string, value: unknown): Promise<{ ok: boolean; error?: string | null }>
-  copy_details(): Promise<{ ok: boolean; error?: string | null }>
+  copy_details(): Promise<string>
 }
 
 declare global {
@@ -65,10 +65,24 @@ function subscribe(fn: () => void) {
   return () => listeners.delete(fn)
 }
 
+/** A failed bridge call keeps the last snapshot and adds an error, unless the app already reported one. */
+function showLoadError(err: unknown) {
+  if (current.error) return
+  const reason = err instanceof Error ? err.message : String(err)
+  setSnapshot({
+    ...current,
+    error: {
+      message: "podbridge couldn't read its state",
+      next_step: 'Close the window and open podbridge again.',
+      details: `get_snapshot failed: ${reason}`,
+    },
+  })
+}
+
 /** Install window.__pb.emit and load the first snapshot once pywebview is ready. */
 export function connectBridge() {
   window.__pb = { emit: setSnapshot }
-  const load = () => window.pywebview?.api.get_snapshot().then(setSnapshot).catch(() => {})
+  const load = () => window.pywebview?.api.get_snapshot().then(setSnapshot).catch(showLoadError)
   if (window.pywebview) load()
   else window.addEventListener('pywebviewready', load, { once: true })
 }

@@ -27,7 +27,7 @@ MIC_SILENT = "The AirPods send no mic audio; switch to the AirPods, run podbridg
 class AapSession:
     """Puts each mic access unit on `queue`; never sends STOP.
 
-    Other inbound frames reach `on_event` as aap_inbound events or (setting id, data) tuples.
+    Other inbound frames reach `on_event` as aap_inbound events or, for a setting echo, the control frame bytes.
     Options: clock, on_event, ca_choice, reporter (keywords); a failing channel is retried, never raised. Frames passed to `send` go out from `run`'s loop.
     """
 
@@ -76,8 +76,7 @@ class AapSession:
             return
         events = aap_inbound.parse(frame)
         if events is None:
-            control = aap.parse_control(frame)
-            events = [control] if control else []
+            events = [frame] if aap.parse_control(frame) else []
         for event in events:
             self.on_event(event)
 

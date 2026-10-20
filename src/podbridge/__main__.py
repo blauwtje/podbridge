@@ -1,7 +1,9 @@
 import argparse
 import importlib
+import subprocess
 import sys
 import traceback
+from pathlib import Path
 
 from podbridge import __version__, update, window
 from podbridge.ui_state import UiState
@@ -35,7 +37,19 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def console_command(argv: list[str]) -> list[str] | None:
+    """`podbridge-cli.exe run --pause --no-update ...` for the windowed exe; None when there is no such exe."""
+    cli = Path(sys.executable).with_name("podbridge-cli.exe")
+    if not getattr(sys, "frozen", False) or not cli.is_file():
+        return None
+    rest = list(argv)
+    rest.remove("run")
+    rest = [arg for arg in rest if arg not in ("--pause", "--no-update")]
+    return [str(cli), "run", *rest, "--pause", "--no-update"]
+
+
 def main(argv: list[str] | None = None) -> int:
+    argv = sys.argv[1:] if argv is None else argv
     args = build_parser().parse_args(argv)
     if args.command == "run" and update.apply(args):
         return 0
@@ -44,6 +58,10 @@ def main(argv: list[str] | None = None) -> int:
         ui_state = UiState()
         app = importlib.import_module(module)
         if window.open(lambda: getattr(app, func)(args, reporter=ui_state), ui_state):
+            return 0
+        command = console_command(argv)
+        if command is not None:
+            subprocess.Popen(command)
             return 0
     try:
         result = getattr(importlib.import_module(module), func)(args)

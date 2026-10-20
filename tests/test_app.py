@@ -391,3 +391,225 @@ def test_serve_once_gives_the_aap_session_settings_and_the_saved_ca_choice(monke
     asyncio.run(app.serve_once("h", "AA", app.Link(asyncio.Queue(), reporter, state)))
     assert seen["ca_choice"] == 2 and seen["on_event"] == state.apply and seen["reporter"] is reporter
     assert ("connected", "active") in reporter.steps
+
+
+def _serve_once_fixtures(monkeypatch, sent):
+    from podbridge import bond
+
+    class Conn:
+        def on(self, *a):
+            pass
+
+    class Fake:
+        def __init__(self, connection, queue, **options):
+            self.ca_choice = options["ca_choice"]
+
+        def send(self, frame):
+            sent.append(frame)
+
+        async def run(self):
+            await asyncio.sleep(60)
+
+    async def connect(host, address, reporter):
+        return Conn()
+
+    async def stream(host, connection):
+        pass
+
+    monkeypatch.setattr(bond, "connect_bonded", connect)
+    monkeypatch.setattr(app, "start_stream", stream)
+    monkeypatch.setattr(app, "AapSession", Fake)
+    monkeypatch.setattr(app, "TICK_S", 0.01)
+
+
+class PanelReporter(RecordingReporter):
+    def __init__(self):
+        super().__init__()
+        self.views, self.writer = [], None
+
+    def set_airpods(self, data):
+        self.views.append(data)
+
+    def set_writer(self, fn):
+        self.writer = fn
+
+
+def test_serve_once_publishes_the_airpods_state_and_reverts_unanswered_writes(monkeypatch):
+    from podbridge import aap_inbound, settings
+
+    sent = []
+    _serve_once_fixtures(monkeypatch, sent)
+    monkeypatch.setattr(settings, "CONFIRM_TIMEOUT_S", 0.05)
+    monkeypatch.setattr(settings, "load_ca_choice", lambda: None)
+    state, reporter = settings.SettingsState(), PanelReporter()
+
+    async def go():
+        task = asyncio.create_task(app.serve_once("h", "AA", app.Link(asyncio.Queue(), reporter, state)))
+        await asyncio.sleep(0.05)
+        state.apply(aap_inbound.Battery(4, 80, 1))
+        state.write("listening_mode", 2, __import__("time").monotonic())
+        await asyncio.sleep(0.3)
+        task.cancel()
+
+    asyncio.run(go())
+    assert any(v.get("battery") == {"left": {"level": 80, "charging": True}} for v in reporter.views)
+    assert reporter.views[-1]["settings"]["listening_mode"]["status"] == "unsupported"
+
+
+def test_serve_once_sends_user_writes_and_stores_the_ca_choice(monkeypatch):
+    import threading
+
+    from podbridge import aap, settings
+
+    sent, saved = [], []
+    _serve_once_fixtures(monkeypatch, sent)
+    monkeypatch.setattr(settings, "load_ca_choice", lambda: None)
+    monkeypatch.setattr(settings, "save_ca_choice", saved.append)
+    reporter, errors = PanelReporter(), []
+
+    def user():
+        while reporter.writer is None:
+            pass
+        reporter.writer("conversation_awareness", 1)
+        reporter.writer("listening_mode", 3)
+        try:
+            reporter.writer("listening_mode", 99)
+        except ValueError as exc:
+            errors.append(exc)
+
+    async def go():
+        task = asyncio.create_task(app.serve_once("h", "AA", app.Link(asyncio.Queue(), reporter)))
+        thread = threading.Thread(target=user)
+        thread.start()
+        await asyncio.to_thread(thread.join)
+        task.cancel()
+
+    asyncio.run(go())
+    assert sent == [aap.control(0x28, 1), aap.control(0x0D, 3)]
+    assert saved == [1] and len(errors) == 1
+
+
+def test_run_names_podbridge_restore_when_the_driver_restore_fails(preflight_usb_only, monkeypatch):
+    from contextlib import contextmanager
+
+    from podbridge import audio_io, winusb
+
+    @contextmanager
+    def failing_restore(vid, pid, machine=None):
+        yield machine
+        raise winusb.DriverError("still bound")
+
+    async def session(host, backend, *rest):
+        pass
+
+    monkeypatch.setattr(winusb, "bound", failing_restore)
+    monkeypatch.setattr(audio_io, "PyAudioWPatchBackend", lambda output_source=None: FakeBackend())
+    monkeypatch.setattr(app, "run_session", session)
+    monkeypatch.setattr(app.crash, "write_log", lambda exc: None)
+    reporter = RecordingReporter()
+    args = types.SimpleNamespace(transport="usb:0bda:887b", output_source="x", address="AA")
+    assert app.run(args, machine=object(), reporter=reporter) == 1
+    assert reporter.events == ["driver_restore_failed"]
+
+
+def test_closing_the_window_cancels_the_session_and_still_restores(monkeypatch):
+    import threading
+
+    from podbridge import pairing, radio, ui_state
+
+    async def start(host, reporter, **kw):
+        pass
+
+    async def serve(host, address, link):
+        await asyncio.sleep(60)
+
+    closed = []
+
+    class H:
+        source = EncodedPacketSource(A2dpEncoder("sbc"))
+
+        async def close(self):
+            closed.append(True)
+
+    monkeypatch.setattr(radio, "start_radio", start)
+    monkeypatch.setattr(app, "serve", serve)
+    state = ui_state.UiState()
+    threading.Timer(0.2, state.stop).start()
+    with pytest.raises(asyncio.CancelledError):
+        asyncio.run(app.run_session(H(), FakeBackend(), app.Session("AA", state)))
+    assert closed == [True]
+
+
+def _run_with(monkeypatch, bound, session, backend=None):
+    from podbridge import audio_io, winusb
+
+    reporter = types.SimpleNamespace(events=[], emit=lambda event: reporter.events.append(event))
+    monkeypatch.setattr(winusb, "bound", bound)
+    monkeypatch.setattr(audio_io, "PyAudioWPatchBackend", lambda output_source=None: backend or FakeBackend())
+    monkeypatch.setattr(app, "run_session", session)
+    monkeypatch.setattr(app.crash, "write_log", lambda exc: None)
+    args = types.SimpleNamespace(transport="usb:0bda:887b", output_source=None, address="AA")
+    assert app.run(args, machine=object(), reporter=reporter) == 1
+    return reporter.events[-1]
+
+
+def test_a_failed_driver_restore_after_another_error_names_the_restore_cause(preflight_usb_only, monkeypatch):
+    from contextlib import contextmanager
+
+    @contextmanager
+    def bound(vid, pid, machine=None):
+        try:
+            yield machine
+        finally:
+            import sys
+
+            sys.exc_info()[1].add_note(f"{app.RESTORE_NOTE}: still bound")
+
+    async def session(*rest):
+        raise RuntimeError("radio gone")
+
+    event = _run_with(monkeypatch, bound, session)
+    assert event.kind == "driver_restore_failed" and "still bound" in event.message
+    assert "radio gone" not in event.message
+
+
+def test_a_failed_mute_restore_is_not_reported_as_a_driver_restore_failure(preflight_usb_only, monkeypatch):
+    from contextlib import contextmanager
+
+    class Backend(FakeBackend):
+        mutes = 0
+
+        def set_mute(self, value):
+            self.mutes += 1
+            if self.mutes == 2:
+                raise OSError("audio endpoint gone")
+
+    @contextmanager
+    def bound(vid, pid, machine=None):
+        yield machine
+
+    async def session(*rest):
+        pass
+
+    event = _run_with(monkeypatch, bound, session, Backend())
+    assert event.kind != "driver_restore_failed" and "audio endpoint gone" in event.message
+
+
+def test_a_window_close_during_the_radio_start_still_closes_the_host(monkeypatch):
+    from podbridge import radio, ui_state
+
+    async def start(host, reporter, **kw):
+        await asyncio.sleep(5)
+
+    closed = []
+
+    class H:
+        async def close(self):
+            closed.append(True)
+
+    monkeypatch.setattr(radio, "start_radio", start)
+    state = ui_state.UiState()
+    state.stop()
+    with pytest.raises(asyncio.CancelledError):
+        asyncio.run(app.run_session(H(), FakeBackend(), app.Session("AA", state)))
+    assert closed == [True]

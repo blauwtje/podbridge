@@ -144,7 +144,6 @@ test('Copy details writes what the app returns to the clipboard and says so for 
 
 test.each([
   ['the call rejects', () => Promise.reject(new Error('bridge went away')), 'bridge went away'],
-  ['the app reports ok: false', () => Promise.resolve({ ok: false, error: 'no clipboard owner' }), 'no clipboard owner'],
   ['the clipboard write fails', () => Promise.resolve('text'), 'permission denied'],
 ])('Copy details keeps the error card and says why when %s', async (_name, call, reason) => {
   stubClipboard(vi.fn().mockRejectedValue(new Error('permission denied')))

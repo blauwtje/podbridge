@@ -108,3 +108,25 @@ def test_ca_choice_default_path_uses_appdata(tmp_path, monkeypatch):
     assert settings.load_ca_choice() == 2
     with pytest.raises(ValueError):
         settings.save_ca_choice(3)
+
+
+def test_view_matches_what_the_window_reads():
+    from podbridge import aap_inbound
+    from podbridge.settings import SettingsState
+
+    state = SettingsState()
+    assert state.view() == {}
+    for event in (
+        aap_inbound.Battery(4, 80, 1),
+        aap_inbound.Battery(8, 50, 2),
+        aap_inbound.EarState(0, 0),
+        aap_inbound.DeviceInfo("Pods", "Pro", "SN1", "8A"),
+    ):
+        state.apply(event)
+    state.write("listening_mode", 2, 0.0)
+    view = state.view()
+    assert view["battery"] == {"left": {"level": 80, "charging": True}, "case": {"level": 50, "charging": False}}
+    assert view["in_ear"] == {"left": True, "right": True}
+    assert (view["name"], view["firmware"]) == ("Pods", "8A")
+    assert view["settings"]["listening_mode"] == {"value": 2, "status": "pending"}
+    assert "enrolled" not in view

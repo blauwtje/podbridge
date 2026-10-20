@@ -12,6 +12,10 @@ CONFIRM_TIMEOUT_S = 3.0
 CONFIRMED, PENDING, UNSUPPORTED = "confirmed", "pending", "unsupported"
 _ENROLLED_ID = 0x2C
 _ON_OFF = (1, 2)
+# AAP battery component ids (librepods docs/control_commands.md) and the status that means charging.
+_BATTERY_PARTS = {"left": 4, "right": 2, "case": 8}
+_CHARGING = 1
+_IN_EAR = 0
 
 
 @dataclass(frozen=True)
@@ -152,6 +156,33 @@ class SettingsState:
         self._deadline[key] = now + CONFIRM_TIMEOUT_S
         self.settings[key] = {"value": value, "status": PENDING}
         return aap.control(setting.id, *_data(setting, value))
+
+    def view(self) -> dict:
+        """The AirPods panel data the window reads (`readAirPods` in ui/src/features/airpods/types.ts).
+
+        Only what the AirPods reported is included, so a fresh state gives {}.
+        """
+        view: dict = {}
+        battery = {
+            part: {"level": self.battery[component].level, "charging": self.battery[component].status == _CHARGING}
+            for part, component in _BATTERY_PARTS.items()
+            if component in self.battery
+        }
+        if battery:
+            view["battery"] = battery
+        if self.ear is not None and self.ear.primary == self.ear.secondary:
+            # The frame does not say which pod is the left one, so only a state both pods share is shown.
+            inside = self.ear.primary == _IN_EAR
+            view["in_ear"] = {"left": inside, "right": inside}
+        if self.device is not None:
+            view.update(name=self.device.name, model=self.device.model, serial=self.device.serial,
+                        firmware=self.device.firmware)
+        if self.enrolled is not None:
+            view["enrolled"] = self.enrolled
+        shown = {key: dict(entry) for key, entry in self.settings.items() if self.visible(key)}
+        if shown:
+            view["settings"] = shown
+        return view
 
     def tick(self, now: float) -> None:
         for key, deadline in list(self._deadline.items()):

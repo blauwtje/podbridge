@@ -75,28 +75,22 @@ const reasonOf = (err: unknown): string => {
 }
 
 /**
- * Ask the app for the details. The app answers with the text to copy (written
- * to the clipboard here) or with {ok, error} after copying itself.
+ * Ask the app for the details: it answers with the text, written to the clipboard here.
  * Throws an Error whose message is the user-facing reason.
  */
 export async function copyDetails(): Promise<void> {
   const api = window.pywebview?.api
   if (!api) throw new Error('the podbridge app is not connected')
-  let result: unknown
+  let text: string
   try {
-    result = await api.copy_details()
+    text = await api.copy_details()
   } catch (err) {
     throw new Error(reasonOf(err))
   }
-  if (typeof result === 'string') {
-    if (!navigator.clipboard) throw new Error('clipboard is not available')
-    try {
-      await navigator.clipboard.writeText(result)
-    } catch (err) {
-      throw new Error(reasonOf(err))
-    }
-    return
+  if (!navigator.clipboard) throw new Error('clipboard is not available')
+  try {
+    await navigator.clipboard.writeText(text)
+  } catch (err) {
+    throw new Error(reasonOf(err))
   }
-  const reply = result as { ok?: boolean; error?: string | null } | null
-  if (reply && reply.ok === false) throw new Error(reply.error || 'unknown error')
 }

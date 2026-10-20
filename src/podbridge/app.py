@@ -4,11 +4,12 @@ import hashlib
 import json
 import logging
 import sys
+import time
 import urllib.request
 from array import array
 from typing import Callable, NamedTuple
 
-from podbridge import paths
+from podbridge import crash, paths
 from podbridge.a2dp_encoder import A2dpEncoder
 from podbridge.aap_session import AapSession
 from podbridge.events import ConsoleReporter, Event
@@ -18,6 +19,9 @@ from podbridge.mic_decoder import MicDecoder
 
 LOOPBACK_FRAMES = 960
 RECONNECT_S = 3.0
+TICK_S = 0.5
+WRITE_TIMEOUT_S = 5.0
+RESTORE_NOTE = "restoring the driver also failed"  # the note winusb.bound adds
 USB_CANDIDATES = ((0x13D3, 0x3571), (0x0BDA, 0x887B), (0x0CB8, 0xC559))
 FIRMWARE_BASE = "rtl8852bu"
 FIRMWARE_FILE = f"{FIRMWARE_BASE}_fw.bin"
@@ -68,6 +72,25 @@ class SafeReporter:
             setter(name, status)
         except Exception:
             log.warning("reporter failed on step %s", name, exc_info=True)
+
+
+    def set_airpods(self, data) -> None:
+        self._forward("set_airpods", data)
+
+    def set_writer(self, fn) -> None:
+        self._forward("set_writer", fn)
+
+    def attach_session(self, cancel) -> None:
+        self._forward("attach_session", cancel)
+
+    def _forward(self, name, value) -> None:
+        method = getattr(self.inner, name, None)
+        if method is None:
+            return
+        try:
+            method(value)
+        except Exception:
+            log.warning("reporter failed on %s", name, exc_info=True)
 
 
 class Session(NamedTuple):
@@ -173,13 +196,49 @@ async def serve_once(host: Host, address: str, link: Link) -> None:
     session = AapSession(
         connection, link.queue, on_event=state.apply, ca_choice=settings.load_ca_choice(), reporter=link.reporter
     )
+    loop = asyncio.get_running_loop()
+
+    def write_setting(key, value) -> None:
+        frame = state.write(key, value, time.monotonic())
+        if key == "conversation_awareness":
+            settings.save_ca_choice(value)
+            session.ca_choice = value
+        session.send(frame)
+
+    async def write(key, value) -> None:
+        write_setting(key, value)
+
+    def submit(key, value) -> None:
+        """Called from the window thread: run the write on this loop and raise its error there."""
+        asyncio.run_coroutine_threadsafe(write(key, value), loop).result(WRITE_TIMEOUT_S)
+
+    set_writer = getattr(link.reporter, "set_writer", None)
+    if set_writer is not None:
+        set_writer(submit)
     aap = asyncio.create_task(session.run())
+    watcher = asyncio.create_task(watch_settings(state, getattr(link.reporter, "set_airpods", None)))
     try:
         await asyncio.wait({aap, disconnected}, return_when=asyncio.FIRST_COMPLETED)
         if aap.done():
             aap.result()
     finally:
+        if set_writer is not None:
+            set_writer(None)
         aap.cancel()
+        watcher.cancel()
+
+
+async def watch_settings(state, publish) -> None:
+    """Revert unconfirmed writes after their timeout and hand each changed AirPods view to `publish`."""
+    last = None
+    while True:
+        state.tick(time.monotonic())
+        view = state.view()
+        if view != last:
+            last = view
+            if publish is not None:
+                publish(view)
+        await asyncio.sleep(TICK_S)
 
 
 async def serve(host: Host, address: str, link: Link) -> None:
@@ -197,36 +256,45 @@ async def run_session(host: Host, backend: AudioBackend, session: Session) -> No
     from podbridge import pairing, radio, supervise
 
     reporter = SafeReporter(session.reporter or ConsoleReporter())
+    loop, main = asyncio.get_running_loop(), asyncio.current_task()
+
+    def cancel() -> None:
+        try:
+            loop.call_soon_threadsafe(main.cancel)
+        except RuntimeError:  # the session already ended and closed its loop
+            pass
+
+    reporter.attach_session(cancel)
     address, make_backend = session.address, session.make_backend
-    step(reporter, "firmware", "active")
-    step(reporter, "radio", "active")
-    await radio.start_radio(host, reporter)
-    step(reporter, "firmware", "done")
-    step(reporter, "radio", "done")
-    if address is None:
-        step(reporter, "pairing", "active")
-        connection = await pairing.pair_with_hint(host, reporter)
-        if connection is None:
-            await host.close()
-            return
-        address = connection.peer_address.to_string(False)
-        save_address(address)
-    step(reporter, "pairing", "done")
-    queue: asyncio.Queue = asyncio.Queue()
-    reporter.emit(Event("discord_hint", DISCORD_HINT))
-    current = [backend]
-
-    def reopen() -> None:
-        if make_backend is not None:
-            current.append(make_backend())
-
-    pipelines = [
-        supervise.Pipeline("output", lambda: output_pipeline(current[-1], lambda: host.source), reopen),
-        supervise.Pipeline("mic", lambda: mic_pipeline(queue, MicDecoder(), current[-1]), reopen),
-    ]
-    tasks = [asyncio.create_task(supervise.supervise(p, reporter)) for p in pipelines]
-    tasks.append(asyncio.create_task(serve(host, address, Link(queue, reporter))))
+    current, tasks = [backend], []
+    # why: a window close can cancel during start_radio or pairing, so every exit closes the host before the driver is restored
     try:
+        step(reporter, "firmware", "active")
+        step(reporter, "radio", "active")
+        await radio.start_radio(host, reporter)
+        step(reporter, "firmware", "done")
+        step(reporter, "radio", "done")
+        if address is None:
+            step(reporter, "pairing", "active")
+            connection = await pairing.pair_with_hint(host, reporter)
+            if connection is None:
+                return
+            address = connection.peer_address.to_string(False)
+            save_address(address)
+        step(reporter, "pairing", "done")
+        queue: asyncio.Queue = asyncio.Queue()
+        reporter.emit(Event("discord_hint", DISCORD_HINT))
+
+        def reopen() -> None:
+            if make_backend is not None:
+                current.append(make_backend())
+
+        pipelines = [
+            supervise.Pipeline("output", lambda: output_pipeline(current[-1], lambda: host.source), reopen),
+            supervise.Pipeline("mic", lambda: mic_pipeline(queue, MicDecoder(), current[-1]), reopen),
+        ]
+        tasks.extend(asyncio.create_task(supervise.supervise(p, reporter)) for p in pipelines)
+        tasks.append(asyncio.create_task(serve(host, address, Link(queue, reporter))))
         done, _ = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
         for task in done:
             task.result()
@@ -248,7 +316,7 @@ def refuse(reporter, console: bool, message: str) -> int:
 
 
 def run(args, machine=None, reporter=None) -> int:
-    from podbridge import crash, doctor, firmware_watch, winusb
+    from podbridge import doctor, firmware_watch, winusb
     from podbridge.audio_io import PyAudioWPatchBackend
 
     machine = machine or winusb.Machine()
@@ -282,6 +350,7 @@ def run(args, machine=None, reporter=None) -> int:
             "or headphones and open podbridge again",
         )
     handler = firmware_watch.install(reporter)
+    session_done = False
     try:
         step(reporter, "driver", "active")
         with winusb.bound(vid, pid, machine), muted_default_output(backend, args.output_source):
@@ -289,16 +358,42 @@ def run(args, machine=None, reporter=None) -> int:
             host = Host(f"usb:{vid:04X}:{pid:04X}")
             address = getattr(args, "address", None) or saved_address()
             asyncio.run(run_session(host, backend, Session(address, reporter, lambda: PyAudioWPatchBackend(output_source=args.output_source))))
-    except KeyboardInterrupt:
-        pass
+            session_done = True
+    except (KeyboardInterrupt, asyncio.CancelledError) as exc:
+        # Ctrl+C or the window closing: a normal end, unless the driver could not be given back.
+        cause = restore_cause(exc, False)
+        if cause is not None:
+            return report_failure(reporter, crash.restore_failure(winusb.DriverError(cause)), exc)
     except Exception as exc:
-        reporter.emit(crash.describe(exc))
-        crash.write_log(exc)
-        return 1
+        cause = restore_cause(exc, session_done)
+        event = crash.restore_failure(winusb.DriverError(cause)) if cause is not None else crash.describe(exc)
+        return report_failure(reporter, event, exc)
     finally:
         firmware_watch.remove(handler)
         backend.close()
     return 0
+
+
+def restore_cause(exc, session_done: bool) -> str | None:
+    """Why the driver restore failed, or None when `exc` is not a failed restore.
+
+    `winusb.bound` adds the restore error as a note when another error is leaving; with no other error, a
+    `DriverError` after the session body finished is the restore itself. A mute restore failure is neither.
+    """
+    from podbridge import winusb
+
+    for note in getattr(exc, "__notes__", ()):
+        if RESTORE_NOTE in note:
+            return note.partition(": ")[2]
+    if session_done and isinstance(exc, winusb.DriverError):
+        return str(exc)
+    return None
+
+
+def report_failure(reporter, event, exc) -> int:
+    reporter.emit(event)
+    crash.write_log(exc)
+    return 1
 
 
 def pair(args, machine=None) -> int:

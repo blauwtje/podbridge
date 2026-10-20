@@ -38,6 +38,9 @@ class UiState:
         self._error = None
         self._airpods = {}
         self._subscribers = []
+        self._writer = None
+        self._cancel_session = None
+        self._stopping = False
 
     def subscribe(self, fn):
         """Call fn(snapshot) after every change."""
@@ -57,6 +60,30 @@ class UiState:
         with self._lock:
             self._airpods = dict(data)
         self._publish()
+
+    def set_writer(self, fn):
+        """Install the callable `write_setting` uses (None removes it)."""
+        self._writer = fn
+
+    def write_setting(self, key, value):
+        """Send a setting change to the AirPods; raises when no session can take it."""
+        writer = self._writer
+        if writer is None:
+            raise RuntimeError("the AirPods are not connected yet")
+        writer(key, value)
+
+    def attach_session(self, cancel):
+        """Register how to end the running session; a stop that came first ends it at once."""
+        self._cancel_session = cancel
+        if self._stopping:
+            cancel()
+
+    def stop(self):
+        """End the running session (called from the window thread when the window closes)."""
+        self._stopping = True
+        cancel = self._cancel_session
+        if cancel is not None:
+            cancel()
 
     def apply(self, event):
         """Record an event: fatal kinds set the error, all others become notices."""
