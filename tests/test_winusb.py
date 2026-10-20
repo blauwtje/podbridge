@@ -49,6 +49,7 @@ class FakeWindows:
         self.wdi_binds = True
         self.scan_rebinds = True
         self.delete_unbinds = True
+        self.delete_exit = 0
         self.state_at_wdi = None
         self.providers = dict(PROVIDERS)
 
@@ -75,8 +76,11 @@ class FakeWindows:
             out = self.instance(rest[2])
         elif rest == ["/enum-drivers"]:
             out = driver_store(self.providers)
-        elif rest[0] == "/delete-driver" and rest[1] == self.driver and self.delete_unbinds:
-            self.driver = None
+        elif rest[0] == "/delete-driver":
+            if rest[1] == self.driver and self.delete_unbinds:
+                self.driver = None
+            if self.delete_exit:
+                return subprocess.CompletedProcess(["pnputil", *rest], self.delete_exit, "Driver package deleted successfully.\nSystem reboot is needed", "")
         elif rest == ["/scan-devices"] and self.driver is None and self.scan_rebinds:
             self.driver = self.original
         return subprocess.CompletedProcess(["pnputil", *rest], 0, out, "")
@@ -444,3 +448,75 @@ def test_other_tools_get_a_signed_code_without_a_libwdi_name(setup):
     with pytest.raises(winusb.DriverError) as info:
         winusb.run_checked(machine, ["pnputil", "/scan-devices"])
     assert str(info.value) == "pnputil /scan-devices failed with exit code 3"
+
+
+@pytest.mark.parametrize("code", [3010, 1641])
+def test_reboot_exit_is_success_and_restore_finishes_when_device_is_back(setup, code, capsys):
+    fake, machine, state_path = setup
+    write_state(state_path)
+    fake.driver = LIBWDI_INF
+    fake.delete_exit = code
+    assert winusb.restore_driver(machine) is True
+    assert fake.driver == REALTEK_INF
+    assert not state_path.exists()
+
+
+@pytest.mark.parametrize("code", [3010, 1641])
+def test_reboot_exit_with_device_still_on_winusb_keeps_state_marked_pending(setup, code, capsys):
+    fake, machine, state_path = setup
+    write_state(state_path)
+    fake.driver = LIBWDI_INF
+    fake.delete_exit = code
+    fake.delete_unbinds = False
+    assert winusb.restore_driver(machine) is True
+    assert json.loads(state_path.read_text())["reboot_pending"] is True
+    assert "restart windows" in capsys.readouterr().err.lower()
+
+
+def test_pending_restore_finishes_cleanly_once_device_is_back_on_its_own_driver(setup):
+    fake, machine, state_path = setup
+    write_state(state_path, reboot_pending=True)
+    fake.driver = REALTEK_INF
+    fake.providers.pop(LIBWDI_INF)
+    winusb.restore_driver(machine)
+    assert not state_path.exists()
+    assert not fake.ran("pnputil", "/delete-driver", LIBWDI_INF, "/uninstall", "/force")
+
+
+def test_pending_restore_before_the_reboot_asks_for_restart_and_keeps_state(setup):
+    fake, machine, state_path = setup
+    write_state(state_path, reboot_pending=True)
+    fake.driver = LIBWDI_INF
+    with pytest.raises(winusb.DriverError, match="(?i)restart"):
+        winusb.restore_driver(machine)
+    assert state_path.exists()
+
+
+def test_other_nonzero_delete_exit_stays_an_error(setup):
+    fake, machine, state_path = setup
+    write_state(state_path)
+    fake.driver = LIBWDI_INF
+    fake.delete_exit = 5
+    with pytest.raises(winusb.DriverError, match="exit code 5"):
+        winusb.restore_driver(machine)
+
+
+def test_restore_error_does_not_replace_the_error_already_leaving_bound(setup, capsys):
+    fake, machine, state_path = setup
+    fake.delete_exit = 5
+    with pytest.raises(RuntimeError, match="firmware") as info:
+        with winusb.bound(VID, PID, machine):
+            raise RuntimeError("firmware")
+    shown = capsys.readouterr().err + "".join(getattr(info.value, "__notes__", []))
+    assert "exit code 5" in shown
+
+
+def test_reboot_exit_inside_bound_does_not_hide_the_firmware_error(setup, capsys):
+    fake, machine, state_path = setup
+    fake.delete_exit = 3010
+    fake.delete_unbinds = False
+    with pytest.raises(RuntimeError, match="firmware"):
+        with winusb.bound(VID, PID, machine):
+            raise RuntimeError("firmware")
+    assert json.loads(state_path.read_text())["reboot_pending"] is True
+    assert "restart windows" in capsys.readouterr().err.lower()
