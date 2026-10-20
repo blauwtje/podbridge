@@ -220,3 +220,13 @@ def test_dropped_sdus_are_logged_as_hex_and_control_frames_too(caplog):
     session._on_sdu(control)
     assert f"dropped inbound SDU {junk.hex()}" in caplog.text
     assert f"control frame {control.hex()}" in caplog.text
+
+
+def test_device_info_frame_is_logged_as_hex(caplog):
+    import logging
+
+    caplog.set_level(logging.INFO, logger="podbridge")
+    session = AapSession(None, asyncio.Queue(), on_event=lambda event: None)
+    info = bytes.fromhex("040004001d00") + b"\x00\x01\x02\x00\x00Pods\x00A3064\x00Apple Inc.\x00S1\x008A357\x00"
+    session._on_sdu(info)
+    assert f"device info frame {info.hex()}" in caplog.text
