@@ -1,6 +1,6 @@
 from bumble.core import ProtocolError
 
-from podbridge.crash import describe, write_log
+from podbridge.crash import describe, restore_failure, restore_pending, write_log
 from podbridge.winusb import DriverError
 
 
@@ -26,3 +26,17 @@ def test_write_log_appends_traceback(tmp_path):
 def test_write_log_error_ignored(tmp_path):
     (tmp_path / "f").write_text("x")
     write_log(ValueError("x"), tmp_path / "f" / "run.log")
+
+
+def test_restore_failure_names_next_step():
+    e = restore_failure(DriverError("busy\nnow"))
+    assert e.kind == "driver_restore_failed" and "busy now" in e.message
+    assert "podbridge restore" in e.next_step
+
+
+def test_restore_pending_only_when_state_exists(tmp_path):
+    p = tmp_path / "driver-state.json"
+    assert restore_pending(p) is None
+    p.write_text("{}")
+    e = restore_pending(p)
+    assert e.kind == "driver_restore_pending" and "podbridge restore" in e.next_step

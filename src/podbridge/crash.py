@@ -23,6 +23,21 @@ def describe(exc) -> Event:
     return Event("failed", f"{prefix}: {cause}", NEXT_STEP)
 
 
+def restore_failure(exc) -> Event:
+    """The driver restore at start failed; say how to finish it."""
+    cause = " ".join(str(exc).split()) or type(exc).__name__
+    return Event("driver_restore_failed", f"Driver restore failed: {cause}",
+                 "run podbridge restore or restart Windows")
+
+
+def restore_pending(state_path) -> Event | None:
+    """A driver state file at start means an earlier run never restored the driver."""
+    if not state_path.exists():
+        return None
+    return Event("driver_restore_pending", "An earlier run left the WinUSB driver in place",
+                 "run podbridge restore or restart Windows")
+
+
 def write_log(exc, path=None) -> None:
     """Append the traceback to run.log; a write error is ignored."""
     try:
