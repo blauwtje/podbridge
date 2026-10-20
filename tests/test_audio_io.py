@@ -1,5 +1,7 @@
 import array
+import sys
 import threading
+import warnings
 
 import pytest
 
@@ -199,6 +201,35 @@ def windows(monkeypatch):
     orig_set = Device.SetMute
     Device.SetMute = lambda self, v, c: need_com("set")() or orig_set(self, v, c)
     return types.SimpleNamespace(pa=pa, log=log, default=default)
+
+
+COMTYPES_ON_315 = """import warnings
+warnings.warn("You are running 'comtypes' on Python 3.15, where the behavior of enum types (such as IntFlag) "
+              "may differ from Python <= 3.14.", FutureWarning, stacklevel=2)
+CLSCTX_ALL = 0
+def CoInitialize(): pass
+def CoUninitialize(): pass
+"""
+
+
+def test_comtypes_python_315_warning_is_not_printed(windows, tmp_path, monkeypatch):
+    """comtypes 1.4.17 warns on import on Python 3.15 (enthought/comtypes#894); pycaw.constants imports it."""
+    (tmp_path / "comtypes.py").write_text(COMTYPES_ON_315)
+    (tmp_path / "pycaw").mkdir()
+    (tmp_path / "pycaw" / "__init__.py").write_text("")
+    (tmp_path / "pycaw" / "constants.py").write_text(
+        "import comtypes\nfrom types import SimpleNamespace as N\n"
+        "EDataFlow = N(eRender=N(value=0))\nERole = N(eMultimedia=N(value=1))\n"
+    )
+    monkeypatch.syspath_prepend(str(tmp_path))
+    for name in ("comtypes", "pycaw", "pycaw.constants"):
+        monkeypatch.delitem(sys.modules, name)
+    from podbridge.audio_io import PyAudioWPatchBackend
+
+    with warnings.catch_warnings(record=True) as log:
+        warnings.simplefilter("always")
+        PyAudioWPatchBackend()
+    assert [str(w.message) for w in log if issubclass(w.category, FutureWarning)] == []
 
 
 def test_loopback_is_48k_stereo_whatever_the_endpoint(windows):
