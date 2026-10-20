@@ -159,6 +159,11 @@ def claims_note(claims: list) -> str:
     return f" (USB calls: {'; '.join(claims)})" if claims else ""
 
 
+def failed_claims_note(claims: list) -> str:
+    """The USB calls, but only when one failed: a recovery step can fail a claim and the stage still pass."""
+    return claims_note(claims) if any(not call.endswith(" ok") for call in claims) else ""
+
+
 async def bumble_transport(ctx: Context) -> str:
     """Bumble transport and firmware load"""
     from podbridge import radio
@@ -183,7 +188,7 @@ async def bumble_transport(ctx: Context) -> str:
     finally:
         driver_log.removeHandler(probe)
         driver_log.setLevel(level)
-    return await subversions_line(device, probe.found)
+    return await subversions_line(device, probe.found) + failed_claims_note(claims)
 
 
 async def bond_present(ctx: Context) -> str:
